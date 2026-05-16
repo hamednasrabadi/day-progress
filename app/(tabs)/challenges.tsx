@@ -33,7 +33,7 @@ const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 const L1_COLOR = '#F43F5E';
 const L2_COLOR = '#F59E0B';
 const L3_COLOR = '#8B5CF6';
-const DEV_MODE = true; // ← set to false before shipping
+const DEV_MODE = false; // ← set to false before shipping
 
 type NarratorMoment = { lines: string[]; dismissLabel: string; achievementId?: AchievementId; tone: NarratorTone; firstTime?: boolean; };
 
