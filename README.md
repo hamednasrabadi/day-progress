@@ -3,6 +3,14 @@
 > **Working title.** A cross-platform mobile productivity app that combines habits, tasks, notes, a daily timeline, and milestone challenges into a single integrated workflow - built with React Native, Expo, and TypeScript.
 
 > **Status:** Beta - actively developing.
+>
+> **Offline-first.** The current build runs entirely on-device. No backend, no network calls. Online sync, multi-device support, and a web companion are on the roadmap for a later release.
+
+## Try it (Android)
+
+Download the latest APK from [Releases](../../releases). Install and run, no dev setup needed.
+
+You'll need to allow installation from unknown sources on your device the first time. An iOS build is not yet available.
 
 ## What This App Is
 
