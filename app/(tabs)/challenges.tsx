@@ -1,11 +1,13 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, Redirect } from 'expo-router';
+import { FEATURE_IDS, useIsUnlocked, useIsNew, useDaysSinceInstall } from '../../lib/unlocks';
+import { getTheme } from '../../lib/timelineTheme';
 import * as Haptics from 'expo-haptics';
 import { Feather } from '@expo/vector-icons';
 import {
   StyleSheet, Text, View, ScrollView, TouchableOpacity, Pressable, Dimensions,
-  Platform, Modal, TextInput, KeyboardAvoidingView, Animated, Easing,
+  Platform, Modal, TextInput, Animated, Easing,
   StatusBar, TouchableWithoutFeedback, LayoutAnimation, UIManager, BackHandler, Switch
 } from 'react-native';
 import { GestureHandlerRootView, ScrollView as GHScrollView, Gesture, GestureDetector } from 'react-native-gesture-handler';
@@ -14,28 +16,34 @@ import {
   BottomSheetScrollView,
 } from '@gorhom/bottom-sheet';
 import Svg, { Circle } from 'react-native-svg';
-import Reanimated, { useSharedValue, useAnimatedProps, runOnJS } from 'react-native-reanimated';
+import { LinearGradient } from 'expo-linear-gradient';
+// Keyboard avoidance: use react-native-keyboard-controller's KeyboardAvoidingView
+// (same as habits.tsx / todo.tsx) — RN's built-in one with behavior=undefined on
+// Android fails to lift inputs inside full-screen Modals (e.g. the Ledger's add row).
+import { KeyboardAvoidingView, useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller';
+import Reanimated, { useSharedValue, useAnimatedProps, useAnimatedStyle, withTiming, withDelay, withSequence, withSpring, withRepeat, cancelAnimation, interpolate, Easing as ReEasing, runOnJS, FadeIn, FadeInDown, FadeOut, LinearTransition } from 'react-native-reanimated';
 
-import { useAppStore, Task, Habit, CalendarSystem, Challenge, Achievement, AchievementId, Milestone, NoteEntry, DeadState, ChallengeUrgency, UrgencyStyle, NarratorTone, Note } from '../../store/useAppStore';
+import { useAppStore, Task, Habit, CalendarSystem, Challenge, Achievement, AchievementId, Milestone, NoteEntry, DeadState, ChallengeUrgency, UrgencyStyle, NarratorTone, Note, ChallengeLink, LedgerEntry, LedgerSource, Stake, StakeKind, inferChallengeCadence, makeLedgerEntry } from '../../store/useAppStore';
 import { calculateGlobalStrength } from '../../lib/habitScore';
 import { isRtl } from '../../lib/rtl';
 import { PresetPickerSheet } from '../../components/challenges/PresetPickerSheet';
 import { ChallengePreset, CHALLENGE_PRESETS } from '../../lib/challengePresets';
+import { syncChallengeNotifications } from '../../lib/challengeNotifications';
+import { consecutiveDaysEndingToday, computeChain } from '../../lib/challengeChain';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   try { UIManager.setLayoutAnimationEnabledExperimental(true); } catch (e) {}
 }
 
-const { width, height } = Dimensions.get('window');
+const { width } = Dimensions.get('window');
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 const L1_COLOR = '#F43F5E';
 const L2_COLOR = '#F59E0B';
 const L3_COLOR = '#8B5CF6';
-const DEV_MODE = false; // ← set to false before shipping
 
-type NarratorMoment = { lines: string[]; dismissLabel: string; achievementId?: AchievementId; tone: NarratorTone; firstTime?: boolean; };
+type NarratorMoment ={ lines: string[]; dismissLabel: string; achievementId?: AchievementId; tone: NarratorTone; firstTime?: boolean; };
 
 function hexToRgba(hex: string, alpha: number): string {
   const h = hex.replace('#', '');
@@ -132,6 +140,24 @@ function formatNoteDate(ts: number, cal: CalendarSystem = 'gregorian') {
   }
   return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).toUpperCase();
 }
+// Ledger timestamp — date + time, sentence case, calendar-aware. Recent events
+// read relative ("Today 3:47 PM" / "Yesterday …"); older ones get weekday +
+// month/day so a long history stays scannable.
+function formatLedgerStamp(ts: number, cal: CalendarSystem = 'gregorian') {
+  const d = new Date(ts);
+  const time = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  const a = new Date(); a.setHours(0, 0, 0, 0);
+  const b = new Date(ts); b.setHours(0, 0, 0, 0);
+  const diff = Math.round((a.getTime() - b.getTime()) / 86400000);
+  if (diff === 0) return `Today ${time}`;
+  if (diff === 1) return `Yesterday ${time}`;
+  const wd = WDAYS_EN[d.getDay()].slice(0, 3);
+  if (cal === 'shamsi') {
+    const s = getShamsiDateParts(d);
+    return `${wd}, ${SHAMSI_MONTHS[s.month - 1].slice(0, 3)} ${s.day} · ${time}`;
+  }
+  return `${wd}, ${GREG_MONTHS[d.getMonth()].slice(0, 3)} ${d.getDate()} · ${time}`;
+}
 function getUrgencyLevel(ts?: number, override?: UrgencyStyle): ChallengeUrgency { if (!ts) return 'none'; const d = daysUntil(ts)!; if (d > 14) return 'none'; if (override && override !== 'auto') return override as ChallengeUrgency; if (d <= 3) return 'haemorrhage'; if (d <= 7) return 'static'; return 'none'; }
 function urgencyColor(level: ChallengeUrgency) { if (level === 'static') return L2_COLOR; if (level === 'haemorrhage') return L1_COLOR; return 'transparent'; }
 function shouldBeDead(c: Challenge) { if (c.deadState !== 'active' && c.deadState !== 'resurrected') return false; if (!c.deadlineTs || c.current >= c.target) return false; return Date.now() > c.deadlineTs; }
@@ -140,25 +166,20 @@ function todayDateStr(): string {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
-function countConsecutiveLogDays(logDates: string[]): number {
-  if (!logDates.length) return 0;
-  const unique = Array.from(new Set(logDates)).sort().reverse();
-  let streak = 0;
-  const check = new Date(); check.setHours(0, 0, 0, 0);
-  for (const str of unique) {
-    const d = `${check.getFullYear()}-${String(check.getMonth() + 1).padStart(2, '0')}-${String(check.getDate()).padStart(2, '0')}`;
-    if (str === d) { streak++; check.setDate(check.getDate() - 1); } else break;
-  }
-  return streak;
-}
+// Consecutive-day counting now lives in lib/challengeChain.ts
+// (`consecutiveDaysEndingToday`) as the single source of truth, shared with the
+// cadence-aware chain used by the cards/detail view.
 
+// Quiet, human copy for a line that didn't hold — no surveillance theatre, no
+// "OPERATOR INACTION". A single honest sentence and a short cause. `label` is
+// kept (sentence case now) for surfaces that still show a heading.
 const DEAD_MESSAGES: { label: string; text: string; cause: string }[] = [
-  { label: 'OBJECTIVE ABANDONED', text: 'This directive was issued. It was not executed.\nThe operator made a choice. This is the record of that choice.', cause: 'OPERATOR INACTION' },
-  { label: 'PROTOCOL BREACH', text: 'The system set a deadline.\nThe system was ignored.\nThe system remembers everything.', cause: 'DEADLINE BREACH' },
-  { label: 'MISSION FAILURE', text: 'Target acquisition was initiated.\nTarget was not secured.\nAll resources allocated to this objective have been logged.', cause: 'MISSION ABORT' },
+  { label: 'This one slipped', text: 'The deadline came. The work didn’t. It happens — the day just gets away.', cause: 'Deadline passed' },
+  { label: 'It got away', text: 'You meant to. The days ran out before you got back to it.', cause: 'Ran out of time' },
+  { label: 'Set down', text: 'Somewhere along the way this stopped being the thing. That’s allowed.', cause: 'Let go' },
 ];
 function getDeadMessage(c: Challenge) {
-  if (c.current === 0) return { label: 'UNTOUCHED', text: "You created this.\nYou never touched it.\nNot once.", cause: 'ZERO ENGAGEMENT' };
+  if (c.current === 0) return { label: 'Never started', text: 'You drew this line and never stepped to it. Not once.', cause: 'Never started' };
   const idx = Math.floor(Math.abs(c.createdAt % DEAD_MESSAGES.length));
   return { ...DEAD_MESSAGES[idx] };
 }
@@ -238,13 +259,6 @@ const ACHIEVEMENT_IMPORTANCE: Record<AchievementId, number> = {
 };
 
 // ─── UI COMPONENTS ───
-const FloatingParticle = ({ color, delay }: { color: string; delay: number }) => {
-  const anim = useRef(new Animated.Value(0)).current;
-  const startX = useMemo(() => 20 + Math.random() * (width - 40), []);
-  const size = useMemo(() => 2 + Math.random() * 3, []);
-  useEffect(() => { const loop = Animated.loop(Animated.sequence([Animated.delay(delay), Animated.timing(anim, { toValue: 1, duration: 4000 + Math.random() * 3000, easing: Easing.inOut(Easing.ease), useNativeDriver: true }), Animated.timing(anim, { toValue: 0, duration: 4000 + Math.random() * 3000, easing: Easing.inOut(Easing.ease), useNativeDriver: true })])); loop.start(); return () => loop.stop(); }, []);
-  return <Animated.View style={{ position: 'absolute', left: startX, bottom: height * 0.35, width: size, height: size, borderRadius: size / 2, backgroundColor: color, opacity: 0.4, transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [0, -40] }) }] }} />;
-};
 
 // Calendar picker — same visual register as the one in the Tasks tab:
 // single rounded container, fixed-height (32px) cells instead of square
@@ -329,57 +343,37 @@ const CalendarPicker = ({ value, onChange, theme, calSystem = 'gregorian' }: { v
 
 const DeadCardOverlay = ({ challenge, theme, onReview }: { challenge: Challenge; theme: any; onReview: () => void; }) => {
   const isPermanent = challenge.deadState === 'resurrected';
-  const progress = Math.min(1, challenge.current / challenge.target);
-  const scanAnim = useRef(new Animated.Value(0)).current;
-  // Slow scan-line — kept for the surveillance vibe, but with a stop()
-  // on unmount and a stopped() ref so the loop doesn't keep walking
-  // when the user navigates away from the tab. Previously it ran
-  // forever per dead card, in parallel, even off-screen.
-  useEffect(() => {
-    const loop = Animated.loop(
-      Animated.timing(scanAnim, { toValue: 1, duration: 6000, easing: Easing.linear, useNativeDriver: false })
-    );
-    loop.start();
-    return () => { loop.stop(); scanAnim.stopAnimation(); };
-  }, []);
-  const caseId = challenge.id.slice(-6).toUpperCase();
+  const pct = Math.round(Math.min(1, challenge.current / challenge.target) * 100);
+  const isDark = theme.isDark;
+  const msg = getDeadMessage(challenge);
+  const titleRtl = isRtl(challenge.title);
+  // Calm graphite, theme-aware. No scan-line, no case-ID, no monospace —
+  // a quiet record, not a surveillance readout. The eyebrow stays muted unless
+  // the line is permanently closed (a second death), which earns a soft red.
+  const accent = isPermanent ? L1_COLOR : theme.textSub;
   return (
-    <View style={[StyleSheet.absoluteFill, { borderRadius: 18, backgroundColor: '#0A0A0A', zIndex: 20, overflow: 'hidden' }]}>
-      <Animated.View style={{ position: 'absolute', left: 0, right: 0, height: 1, backgroundColor: isPermanent ? 'rgba(244,63,94,0.12)' : 'rgba(255,255,255,0.04)', top: scanAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] }) }} pointerEvents="none" />
-      {/* Voice: clinical observation. Single register, no sci-fi
-          ("TIMELINE SEVERED") or detective metaphors ("CASE FILE") —
-          just a quiet record that the deadline came and went. */}
-      <View style={{ padding: 14, borderBottomWidth: 1, borderBottomColor: '#1A1A1A' }}>
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 3 }}>
-          <Text style={{ color: isPermanent ? L1_COLOR : '#555', fontSize: 9, fontWeight: '900', letterSpacing: 2.5, fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace' }}>{isPermanent ? 'CLOSED' : 'EXPIRED'}</Text>
-          <Text style={{ color: '#333', fontSize: 9, fontWeight: '700', fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace' }}>{'#' + caseId}</Text>
+    <View style={[StyleSheet.absoluteFill, { borderRadius: 18, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.border, zIndex: 20, overflow: 'hidden', padding: 16, justifyContent: 'space-between' }]}>
+      <View>
+        <Text style={{ color: accent, fontSize: 9, fontWeight: '900', letterSpacing: 2, marginBottom: 8, opacity: isPermanent ? 1 : 0.8 }}>{isPermanent ? 'CLOSED' : 'DIDN’T HOLD'}</Text>
+        <Text numberOfLines={1} style={{ color: theme.textMain, fontSize: 16, fontWeight: '800', letterSpacing: -0.3, marginBottom: 6, opacity: 0.92, textAlign: titleRtl ? 'right' : 'left', writingDirection: titleRtl ? 'rtl' : 'ltr' }}>{challenge.title}</Text>
+        <Text numberOfLines={2} style={{ color: theme.textSub, fontSize: 12, fontWeight: '500', lineHeight: 17 }}>{msg.text}</Text>
+        {challenge.punishment ? (
+          <Text numberOfLines={1} style={{ color: isPermanent ? L1_COLOR : '#F59E0B', fontSize: 11, fontWeight: '700', marginTop: 6 }}>On the line: {challenge.punishment}</Text>
+        ) : null}
+      </View>
+      <View>
+        <Text style={{ color: theme.textSub, fontSize: 11, fontWeight: '600', marginBottom: 6 }}>Reached {pct}% · {challenge.current}/{challenge.target} {challenge.unit}</Text>
+        <View style={{ height: 3, backgroundColor: theme.border, borderRadius: 2, overflow: 'hidden', marginBottom: 10 }}>
+          <View style={{ height: '100%', width: `${Math.max(2, pct)}%`, backgroundColor: isPermanent ? hexToRgba(L1_COLOR, 0.5) : theme.textSub, borderRadius: 2 }} />
         </View>
-        <Text
-          style={{
-            color: '#FFF', fontSize: 13, fontWeight: '900', letterSpacing: 0.4,
-            textAlign: isRtl(challenge.title) ? 'right' : 'left',
-            writingDirection: isRtl(challenge.title) ? 'rtl' : 'ltr',
-          }}
-          numberOfLines={1}
+        <TouchableOpacity
+          onPress={() => { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning); onReview(); }}
+          style={{ backgroundColor: isPermanent ? hexToRgba(L1_COLOR, isDark ? 0.1 : 0.08) : theme.bg, borderRadius: 10, borderWidth: 1, borderColor: isPermanent ? hexToRgba(L1_COLOR, 0.3) : theme.border, paddingVertical: 11, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 }}
         >
-          {challenge.title}
-        </Text>
-      </View>
-      <View style={{ flex: 1, justifyContent: 'center', paddingHorizontal: 14 }}>
-        <Text style={{ color: isPermanent ? L1_COLOR : '#888', fontSize: 9, fontWeight: '900', letterSpacing: 2, marginBottom: 6 }}>DEADLINE PASSED</Text>
-        <Text style={{ color: isPermanent ? '#FFAAAA' : '#CCC', fontSize: 11, lineHeight: 16, fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace' }}>{`${Math.round(progress * 100)}% reached. Target was ${challenge.target} ${challenge.unit}.`}</Text>
-      </View>
-      <View style={{ marginHorizontal: 14, marginBottom: 10, height: 2, backgroundColor: '#1A1A1A', borderRadius: 1, overflow: 'hidden' }}><View style={{ height: '100%', width: `${progress * 100}%`, backgroundColor: isPermanent ? 'rgba(244,63,94,0.38)' : '#333', borderRadius: 1 }} /></View>
-      {!isPermanent ? (
-        <TouchableOpacity onPress={() => { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning); onReview(); }} style={{ margin: 10, marginTop: 0, backgroundColor: '#111', borderRadius: 10, borderWidth: 1, borderColor: '#2A2A2A', paddingVertical: 12, paddingHorizontal: 14, flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-          <View style={{ flex: 1 }}><Text style={{ color: '#FFF', fontSize: 12, fontWeight: '900', letterSpacing: 0.5 }}>REVIEW</Text><Text style={{ color: '#555', fontSize: 10, fontWeight: '600', marginTop: 2 }}>One decision left: resurrect or bury</Text></View>
-          <Feather name="arrow-right" size={14} color="#666" />
+          <Text style={{ color: isPermanent ? L1_COLOR : theme.textMain, fontSize: 12, fontWeight: '800', letterSpacing: 0.3 }}>{isPermanent ? 'Bury it' : 'Review'}</Text>
+          {!isPermanent && <Feather name="arrow-right" size={13} color={theme.textSub} />}
         </TouchableOpacity>
-      ) : (
-        <TouchableOpacity onPress={() => { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning); onReview(); }} style={{ margin: 10, marginTop: 0, backgroundColor: 'rgba(244,63,94,0.08)', borderRadius: 10, borderWidth: 1, borderColor: 'rgba(244,63,94,0.2)', paddingVertical: 12 }}>
-          <Text style={{ color: L1_COLOR, fontSize: 11, fontWeight: '900', letterSpacing: 0.5, textAlign: 'center' }}>BURY</Text>
-        </TouchableOpacity>
-      )}
+      </View>
     </View>
   );
 };
@@ -392,19 +386,42 @@ const DeadCardOverlay = ({ challenge, theme, onReview }: { challenge: Challenge;
 //                deadline, milestones, habit links, trash, etc).
 // Dead and resurrected challenges render the existing DeadCardOverlay
 // with a fixed-height container — no expand, no progress controls.
-// Pace projection — extracted so both the card's deadline subtitle
-// and the full-screen detail view can share the same formatting.
+// Pace projection — extracted so both the card's deadline subtitle and the
+// full-screen detail view can share the same formatting. Cadence-aware: what
+// "on pace" means differs by how the challenge is meant to be worked.
 function computePace(challenge: Challenge, theme: any) {
-  const isDone = challenge.current >= challenge.target;
-  if (isDone) return { text: 'Target reached.', color: theme.success };
+  if (challenge.current >= challenge.target) return { text: 'Target reached.', color: theme.success };
+  const cadence = challenge.cadence ?? 'cumulative';
+  const daysLeft = challenge.deadlineTs
+    ? Math.max(0, Math.ceil((challenge.deadlineTs - Date.now()) / 86400000))
+    : null;
+
+  // One-shot — there's no rate to project; it's done in a single act.
+  if (cadence === 'oneshot') {
+    if (daysLeft === null) return { text: 'Do it once.', color: theme.textSub };
+    if (daysLeft === 0) return { text: 'Last day to do it.', color: theme.danger };
+    return { text: `${daysLeft}d to do it.`, color: theme.textSub };
+  }
+
+  // Daily — the target IS a day count; pace is "can you still log every
+  // remaining day to the line?" rather than an extrapolated rate.
+  if (cadence === 'daily') {
+    const remaining = Math.max(0, challenge.target - challenge.current);
+    if (daysLeft === null) return { text: `${remaining} ${remaining === 1 ? 'day' : 'days'} to go.`, color: theme.textSub };
+    if (remaining > daysLeft) return { text: `Behind · ${remaining - daysLeft}d short at one a day.`, color: theme.danger };
+    const slack = daysLeft - remaining;
+    if (slack === 0) return { text: 'On track · every remaining day counts.', color: theme.textSub };
+    return { text: `On track · ${slack}d of slack.`, color: theme.success };
+  }
+
+  // Cumulative — extrapolate the current rate (the original projection).
   if (challenge.current === 0) return { text: 'Awaiting first log.', color: theme.textSub };
   const elapsedDays = Math.max(1, (Date.now() - challenge.createdAt) / 86400000);
   const ratePerDay = challenge.current / elapsedDays;
   const remaining = challenge.target - challenge.current;
   const projectedDays = Math.ceil(remaining / ratePerDay);
-  if (!challenge.deadlineTs) return { text: `~${projectedDays}d remaining at current rate.`, color: theme.textSub };
-  const actualDaysLeft = Math.max(0, Math.ceil((challenge.deadlineTs - Date.now()) / 86400000));
-  const buffer = actualDaysLeft - projectedDays;
+  if (daysLeft === null) return { text: `~${projectedDays}d remaining at current rate.`, color: theme.textSub };
+  const buffer = daysLeft - projectedDays;
   if (buffer >= 0) return { text: `Pace optimal · ${buffer}d buffer.`, color: theme.success };
   return { text: `Off pace · projected ${Math.abs(buffer)}d late.`, color: theme.danger };
 }
@@ -622,6 +639,140 @@ const ActivityRingCard = React.memo(({
   prev.calSystem === next.calSystem
 ));
 
+// ── ROSTER: shared bits ──────────────────────────────────────────────────
+// Short deadline label for the Roster (sentence case, calendar-aware).
+function rosterDeadline(c: Challenge, calSystem: CalendarSystem): string {
+  if (!c.deadlineTs) return 'No deadline';
+  const d = Math.ceil((c.deadlineTs - Date.now()) / 86400000);
+  if (d < 0) return `${Math.abs(d)}d over`;
+  if (d === 0) return 'Today';
+  if (d === 1) return 'Tomorrow';
+  if (d <= 14) return `${d}d left`;
+  const dt = new Date(c.deadlineTs);
+  if (calSystem === 'shamsi') { const s = getShamsiDateParts(dt); return `${SHAMSI_MONTHS[s.month - 1].slice(0, 3)} ${s.day}`; }
+  return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+// Cadence-aware one-liner — what this challenge's progress MEANS right now.
+function rosterStatus(c: Challenge, chain: ReturnType<typeof computeChain>): string {
+  if (c.current >= c.target) return 'Line held.';
+  const cadence = c.cadence ?? 'cumulative';
+  if (cadence === 'daily') return chain.current > 0 ? `${chain.current}-day chain` : (c.current > 0 ? 'Chain broken' : 'Start the chain');
+  if (cadence === 'oneshot') return 'One and done';
+  return `${c.current} of ${c.target} ${c.unit}`;
+}
+
+// ── ROSTER CARD ──────────────────────────────────────────────────────────
+// The chosen design (BOLD, from the art-tab studies). A full-width band whose
+// fill is a REVERSED gradient — soft where the title sits (so text stays
+// clean), hottest at the leading edge: the front of the progress reads like a
+// wavefront. On mount the fill (and the bright leading edge) sweep up from 0,
+// staggered down the list. The status line under the title rides a
+// high-contrast neutral so it never muddies. Done → a check; ≤72h → red.
+const ROSTER_LO = 0.10, ROSTER_HI = 0.80; // BOLD alpha range
+// Roster card — UI-thread only (reanimated): staggered entrance, a scaleX
+// gradient fill (no JS-thread `width` animation = no list jank), a counting %,
+// press feedback, and the prototype's TAP-TO-LOG (+1) interaction. The top card
+// is the "hero" and gets a gentle breathing wash + a slow light sheen. Tap to
+// log progress; long-press opens the full detail view (which holds Edit).
+const RosterCard = React.memo(({ challenge, theme, calSystem, index, hero, onBump, onOpen }: {
+  challenge: Challenge; theme: any; calSystem: CalendarSystem; index: number; hero: boolean; onBump: () => void; onOpen: () => void;
+}) => {
+  const c = challenge;
+  const pct = Math.min(1, c.current / c.target);
+  const done = c.current >= c.target;
+  const chain = useMemo(() => computeChain(c), [c.logDates, c.cadence]);
+  const titleRtl = isRtl(c.title);
+  const isDark = theme.isDark;
+  const daysLeft = c.deadlineTs ? Math.ceil((c.deadlineTs - Date.now()) / 86400000) : null;
+  const knife = !done && daysLeft !== null && daysLeft >= 0 && daysLeft <= 3;
+  const resurrected = !!c.resurrectedBefore;  // brought back from the dead once
+  const metaCol = done ? c.color : knife ? theme.danger : hexToRgba(theme.textMain, isDark ? 0.74 : 0.82);
+  const meta = `${rosterStatus(c, chain)}${done ? '' : ` · ${rosterDeadline(c, calSystem)}`}`;
+
+  const fill = useSharedValue(0);   // 0→pct, drives the bar + the counting %
+  const press = useSharedValue(0);  // finger-down scale
+  const pop = useSharedValue(0);    // kick on each log
+  const breathe = useSharedValue(0);
+  const sheen = useSharedValue(0);
+  const mounted = useRef(false);
+
+  useEffect(() => {
+    if (!mounted.current) {
+      mounted.current = true;
+      fill.value = withDelay(index * 70 + 120, withTiming(pct, { duration: 800, easing: ReEasing.out(ReEasing.cubic) }));
+      if (hero) {
+        breathe.value = withRepeat(withSequence(
+          withTiming(1, { duration: 1700, easing: ReEasing.inOut(ReEasing.ease) }),
+          withTiming(0, { duration: 1700, easing: ReEasing.inOut(ReEasing.ease) }),
+        ), -1, false);
+        sheen.value = withRepeat(withSequence(
+          withTiming(1, { duration: 1000, easing: ReEasing.in(ReEasing.quad) }),
+          withTiming(1, { duration: 3200 }),
+          withTiming(0, { duration: 0 }),
+        ), -1, false);
+      }
+      return;
+    }
+    // a log happened (c.current changed) — spring the fill + kick the card
+    fill.value = withSpring(pct, { damping: 15, stiffness: 150 });
+    pop.value = withSequence(withTiming(1, { duration: 110 }), withTiming(0, { duration: 260 }));
+  }, [c.current, c.target]);
+
+  const cardStyle = useAnimatedStyle(() => ({ transform: [{ scale: interpolate(press.value, [0, 1], [1, 0.97]) + pop.value * 0.04 }] }));
+  const fillStyle = useAnimatedStyle(() => ({ transform: [{ scaleX: fill.value }] }));
+  const heroGlow = useAnimatedStyle(() => ({ opacity: 0.05 + breathe.value * 0.10 }));
+  const sheenStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(sheen.value, [0, 0.12, 0.88, 1], [0, 0.08, 0.08, 0]),
+    transform: [{ translateX: interpolate(sheen.value, [0, 1], [-180, 460]) }, { rotate: '18deg' }],
+  }));
+  const pctProps = useAnimatedProps(() => ({ text: `${Math.round(fill.value * 100)}%`, defaultValue: `${Math.round(fill.value * 100)}%` } as any));
+
+  return (
+    <Reanimated.View
+      entering={FadeInDown.delay(index * 70).springify().damping(15).stiffness(140)}
+      exiting={FadeOut.duration(280)} layout={LinearTransition.springify().damping(18)}
+      style={{ marginBottom: 10 }}
+    >
+      <Pressable onPress={onBump} onLongPress={onOpen} delayLongPress={300}
+        onPressIn={() => { press.value = withTiming(1, { duration: 90 }); }}
+        onPressOut={() => { press.value = withTiming(0, { duration: 170 }); }}
+      >
+        <Reanimated.View style={[{ height: 92, borderRadius: 16, overflow: 'hidden', backgroundColor: hexToRgba(c.color, isDark ? 0.07 : 0.09), justifyContent: 'center' }, cardStyle]}>
+          {/* progress fill — scaleX from the left edge (UI-thread, no layout) */}
+          <Reanimated.View pointerEvents="none" style={[{ position: 'absolute', left: 0, top: 0, bottom: 0, width: '100%', transformOrigin: 'left' }, fillStyle]}>
+            <LinearGradient colors={[hexToRgba(c.color, ROSTER_LO), hexToRgba(c.color, ROSTER_HI)] as [string, string]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={StyleSheet.absoluteFill} />
+          </Reanimated.View>
+          {/* hero: breathing wash + slow light sheen */}
+          {hero && <Reanimated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: c.color }, heroGlow]} />}
+          {hero && <Reanimated.View pointerEvents="none" style={[{ position: 'absolute', top: -30, bottom: -30, width: 36, backgroundColor: '#FFFFFF' }, sheenStyle]} />}
+
+          <View style={{ paddingHorizontal: 18, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, marginBottom: 4 }}>
+                <Text numberOfLines={1} style={{ color: theme.textMain, fontSize: 17, fontWeight: '800', letterSpacing: -0.3, flexShrink: 1, textAlign: titleRtl ? 'right' : 'left', writingDirection: titleRtl ? 'rtl' : 'ltr' }}>{c.title}</Text>
+                {resurrected ? (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: hexToRgba(c.color, 0.18), paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 }}>
+                    <Feather name="rotate-ccw" size={9} color={c.color} />
+                    <Text style={{ color: c.color, fontSize: 9, fontWeight: '900', letterSpacing: 1 }}>RISEN</Text>
+                  </View>
+                ) : null}
+              </View>
+              <Text style={{ color: metaCol, fontSize: 12, fontWeight: '700' }}>{meta}</Text>
+            </View>
+            {done ? <Feather name="check" size={26} color={c.color} /> : (
+              <View style={{ alignItems: 'flex-end' }}>
+                <ReanimatedTextInput editable={false} pointerEvents="none" underlineColorAndroid="transparent" animatedProps={pctProps}
+                  style={{ color: theme.textMain, fontSize: 26, fontWeight: '900', letterSpacing: -1, padding: 0, margin: 0, minWidth: 72, textAlign: 'right' }} />
+                <Text style={{ color: theme.textSub, fontSize: 11, fontWeight: '700' }}>{c.current}/{c.target}</Text>
+              </View>
+            )}
+          </View>
+        </Reanimated.View>
+      </Pressable>
+    </Reanimated.View>
+  );
+}, (p, n) => p.challenge === n.challenge && p.theme === n.theme && p.calSystem === n.calSystem && p.index === n.index && p.hero === n.hero);
+
 const CompletionBurst = ({ color, visible }: { color: string; visible: boolean }) => {
   const anims = useRef(Array.from({ length: 12 }, () => new Animated.Value(0))).current;
   useEffect(() => { if (!visible) return; Animated.parallel(anims.map((a, i) => Animated.sequence([Animated.delay(i * 25), Animated.spring(a, { toValue: 1, friction: 5, tension: 80, useNativeDriver: true })]))).start(); const t = setTimeout(() => Animated.parallel(anims.map(a => Animated.timing(a, { toValue: 0, duration: 400, useNativeDriver: true }))).start(), 1400); return () => clearTimeout(t); }, [visible]);
@@ -629,45 +780,65 @@ const CompletionBurst = ({ color, visible }: { color: string; visible: boolean }
   return (<View style={StyleSheet.absoluteFill} pointerEvents="none">{anims.map((anim, i) => { const angle = (i / 12) * Math.PI * 2; return <Animated.View key={i} style={{ position: 'absolute', top: '45%', left: '45%', width: 8, height: 8, borderRadius: 4, backgroundColor: color, opacity: anim, transform: [{ translateX: anim.interpolate({ inputRange: [0, 1], outputRange: [0, Math.cos(angle) * 90] }) }, { translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [0, Math.sin(angle) * 90] }) }, { scale: anim.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0, 1.6, 0.5] }) }] }} />; })}</View>);
 };
 
+// The narrator — reframed. No typewriter, no blinking cursor, no monospace.
+// A letter set in serif that fades in one line at a time, with a long beat of
+// stillness between lines and the dismiss word arriving last. The app pausing
+// the world to say one true thing. Used only for the rare, earned moments.
+const SERIF = Platform.OS === 'ios' ? 'Georgia' : 'serif';
 const NarratorCeremony = ({ moment, theme, onDone }: { moment: NarratorMoment; theme: any; onDone: () => void }) => {
-  const [displayedLines, setDisplayedLines] = useState<string[]>([]);
-  const [currentLineText, setCurrentLineText] = useState('');
-  const [typingDone, setTypingDone] = useState(false);
-  const symAnim = useRef(new Animated.Value(0)).current;
-  const textAnim = useRef(new Animated.Value(0)).current;
-  const btnAnim = useRef(new Animated.Value(0)).current;
-  const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
-  const alive = useRef(true);
   const ach = moment.achievementId ? ACHIEVEMENT_DEFS.find(a => a.id === moment.achievementId) : null;
   const effectiveTone = (moment.achievementId && EXISTENTIAL_OVERRIDES.has(moment.achievementId)) ? 'existential' as NarratorTone : moment.tone;
-  const charMs = NARRATOR_CHAR_SPEED[effectiveTone];
-  const pauseMs = NARRATOR_LINE_PAUSE[effectiveTone];
-  const addTimer = (fn: () => void, ms: number) => { const t = setTimeout(() => { if (alive.current) fn(); }, ms); timers.current.push(t); };
-  const typeLines = useCallback((lineIdx: number, lines: string[]) => {
-    if (lineIdx >= lines.length) { setTypingDone(true); addTimer(() => Animated.timing(btnAnim, { toValue: 1, duration: 500, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start(), 400); return; }
-    const line = lines[lineIdx]; let ci = 0;
-    const tick = () => { if (!alive.current) return; if (ci < line.length) { ci++; setCurrentLineText(line.slice(0, ci)); const ch = line[ci - 1]; const ms = ch === '.' || ch === '…' ? charMs * 5 : ch === ',' ? charMs * 3 : ch === '!' || ch === '?' ? charMs * 4 : ch === ' ' ? charMs * 1.3 : charMs; addTimer(tick, ms); } else { setDisplayedLines(prev => [...prev, line]); setCurrentLineText(''); addTimer(() => typeLines(lineIdx + 1, lines), pauseMs); } };
-    tick();
-  }, [charMs, pauseMs]);
+  // The pause is the beat BETWEEN lines appearing (not a typing speed).
+  // Existential lingers; everything has a generous floor so nothing rushes.
+  const linePause = Math.max(750, NARRATOR_LINE_PAUSE[effectiveTone] * 2.4);
+  const linesKey = moment.lines.join('|');
+
+  const symAnim = useRef(new Animated.Value(0)).current;
+  const btnAnim = useRef(new Animated.Value(0)).current;
+  // One opacity value per line; rebuilt when the moment's lines change.
+  const lineAnims = useMemo(() => moment.lines.map(() => new Animated.Value(0)), [linesKey]);
+
   useEffect(() => {
-    // Entry choreography pushed as fast as possible. Text starts
-    // already visible (textAnim init = 1) and typing begins on the
-    // same tick the modal becomes interactive — no setTimeout
-    // padding. The symbol still fades in for the stamp-press feel
-    // but doesn't block anything else.
-    alive.current = true; setDisplayedLines([]); setCurrentLineText(''); setTypingDone(false);
-    symAnim.setValue(0); textAnim.setValue(1); btnAnim.setValue(0);
-    timers.current.forEach(clearTimeout); timers.current = [];
-    Animated.timing(symAnim, { toValue: 1, duration: 300, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
-    typeLines(0, moment.lines);
-    return () => { alive.current = false; timers.current.forEach(clearTimeout); };
-  }, [moment.achievementId, moment.lines.join('|')]);
+    symAnim.setValue(0); btnAnim.setValue(0); lineAnims.forEach(a => a.setValue(0));
+    const seq = Animated.sequence([
+      Animated.timing(symAnim, { toValue: 1, duration: 650, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+      Animated.delay(350),
+      Animated.stagger(linePause, lineAnims.map(a => Animated.timing(a, { toValue: 1, duration: 800, easing: Easing.out(Easing.cubic), useNativeDriver: true }))),
+      Animated.timing(btnAnim, { toValue: 1, duration: 600, delay: 600, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+    ]);
+    seq.start();
+    return () => seq.stop();
+  }, [linesKey, moment.achievementId]);
+
   return (
     <View style={{ flex: 1, backgroundColor: theme.bg, justifyContent: 'center', alignItems: 'center', padding: 44 }}>
-      <StatusBar barStyle={theme.bg === '#000000' ? 'light-content' : 'dark-content'} />
-      {ach && (<Animated.View style={{ marginBottom: 36, opacity: symAnim, transform: [{ scale: symAnim.interpolate({ inputRange: [0, 1], outputRange: [0.7, 1] }) }], alignItems: 'center' }}><Text style={{ fontSize: 52, color: theme.textMain, fontWeight: '900', textAlign: 'center' }}>{ach.sym}</Text>{!moment.firstTime && (<Text style={{ fontSize: 9, fontWeight: '900', letterSpacing: 3, color: theme.textSub, textAlign: 'center', marginTop: 10, opacity: 0.7 }}>{ach.name}</Text>)}</Animated.View>)}
-      <Animated.View style={{ opacity: textAnim, width: '100%' }}>{displayedLines.map((line, i) => (<Text key={i} style={{ fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace', color: theme.textSub, fontSize: 13, lineHeight: 22, marginBottom: 2 }}>{line}</Text>))}{!typingDone && (<Text style={{ fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace', color: theme.textMain, fontSize: 13, lineHeight: 22, opacity: 0.85 }}>{currentLineText}<Text style={{ color: theme.textSub, opacity: 0.5 }}>▌</Text></Text>)}</Animated.View>
-      <Animated.View style={{ position: 'absolute', bottom: 60, opacity: btnAnim, transform: [{ translateY: btnAnim.interpolate({ inputRange: [0, 1], outputRange: [10, 0] }) }] }}><TouchableOpacity onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); onDone(); }} hitSlop={{ top: 20, bottom: 20, left: 40, right: 40 }}><Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '900', letterSpacing: 2.5 }}>{moment.dismissLabel}</Text></TouchableOpacity></Animated.View>
+      <StatusBar barStyle={theme.isDark ? 'light-content' : 'dark-content'} />
+      {ach && (
+        <Animated.View style={{ marginBottom: 40, opacity: symAnim, transform: [{ scale: symAnim.interpolate({ inputRange: [0, 1], outputRange: [0.82, 1] }) }], alignItems: 'center' }}>
+          <Text style={{ fontSize: 50, color: theme.textMain, fontWeight: '400', textAlign: 'center' }}>{ach.sym}</Text>
+          {!moment.firstTime && (<Text style={{ fontSize: 9, fontWeight: '900', letterSpacing: 3, color: theme.textSub, textAlign: 'center', marginTop: 14, opacity: 0.7 }}>{ach.name}</Text>)}
+        </Animated.View>
+      )}
+      <View style={{ width: '100%' }}>
+        {moment.lines.map((line, i) => (
+          <Animated.Text
+            key={i}
+            style={{
+              opacity: lineAnims[i],
+              transform: [{ translateY: lineAnims[i].interpolate({ inputRange: [0, 1], outputRange: [6, 0] }) }],
+              fontFamily: SERIF, color: theme.textMain, fontSize: 18, fontWeight: '400',
+              lineHeight: 29, letterSpacing: 0.2, textAlign: 'center', marginBottom: 7,
+            }}
+          >
+            {line}
+          </Animated.Text>
+        ))}
+      </View>
+      <Animated.View style={{ position: 'absolute', bottom: 60, opacity: btnAnim }}>
+        <TouchableOpacity onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); onDone(); }} hitSlop={{ top: 20, bottom: 20, left: 40, right: 40 }}>
+          <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '900', letterSpacing: 2.5 }}>{moment.dismissLabel}</Text>
+        </TouchableOpacity>
+      </Animated.View>
     </View>
   );
 };
@@ -716,7 +887,7 @@ const CompletionCeremony = ({ visible, challenge, isFirst, wasResurrected, theme
   return (
     <Modal visible animationType="fade" transparent={false}>
       <View style={{ flex: 1, backgroundColor: theme.bg, justifyContent: 'center', alignItems: 'center', padding: 44 }}>
-        <StatusBar barStyle={theme.bg === '#000000' ? 'light-content' : 'dark-content'} />
+        <StatusBar barStyle={theme.isDark ? 'light-content' : 'dark-content'} />
         <CompletionBurst color={challenge.color} visible={visible} />
         <Animated.View style={{ opacity: fadeAnims[0], alignItems: 'center', marginBottom: 32 }}>
           <Text style={{ fontSize: Math.min(90, width * 0.22), fontWeight: '900', color: challenge.color, letterSpacing: -4 }}>{displayNum}</Text>
@@ -758,7 +929,7 @@ const AchievementsScreen = ({ visible, achievements, theme, onClose, onTrigger }
   // bottom acknowledging more exist, without naming or hinting at them.
   const unlocked = achievements.filter(a => a.unlockedAt).sort((a, b) => (b.unlockedAt || 0) - (a.unlockedAt || 0));
   const lockedCount = ACHIEVEMENT_DEFS.length - unlocked.length;
-  const isDark = theme.bg === '#000000';
+  const isDark = theme.isDark;
   return (
     <Modal visible={visible} animationType="slide" transparent={false} onRequestClose={onClose}>
       <SafeAreaView style={{ flex: 1, backgroundColor: theme.bg }}>
@@ -772,7 +943,7 @@ const AchievementsScreen = ({ visible, achievements, theme, onClose, onTrigger }
             <View style={{ alignItems: 'center', paddingTop: 80, paddingHorizontal: 24 }}>
               <Feather name="award" size={36} color={theme.textSub} style={{ opacity: 0.18, marginBottom: 18 }} />
               <Text style={{ color: theme.textMain, fontSize: 16, fontWeight: '900', textAlign: 'center', marginBottom: 6 }}>Empty so far.</Text>
-              <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '600', textAlign: 'center', lineHeight: 18, opacity: 0.85 }}>Achievements appear here as you earn them. Their names won't be shown until you do.</Text>
+              <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '600', textAlign: 'center', lineHeight: 18, opacity: 0.85 }}>Achievements appear here as you earn them. Their names won’t be shown until you do.</Text>
             </View>
           ) : (
             <>
@@ -811,7 +982,7 @@ const AchievementsScreen = ({ visible, achievements, theme, onClose, onTrigger }
                         {ACHIEVEMENT_NARRATION[a.id]?.hint || ''}
                       </Text>
                       {unlockedDate ? (
-                        <Text style={{ fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace', color: theme.textSub, fontSize: 9, fontWeight: '800', letterSpacing: 1.5, marginTop: 6, opacity: 0.6 }}>
+                        <Text style={{ color: theme.textSub, fontSize: 9, fontWeight: '800', letterSpacing: 1.5, marginTop: 6, opacity: 0.6 }}>
                           {unlockedDate}
                         </Text>
                       ) : null}
@@ -837,74 +1008,262 @@ const AchievementsScreen = ({ visible, achievements, theme, onClose, onTrigger }
 // Top-level constants so they're shared between the gate's "is unlocked"
 // check and the LockScreen's progress bars — single source of truth.
 // Tweak these if the unlock pace needs adjusting; nothing else changes.
-const LOCK_FOCUS_HOURS = 10;
+const LOCK_FOCUS_HOURS = 6;
 const LOCK_TASKS = 10;
 const LOCK_HABIT_SCORE = 30;
 const LOCK_PROMISES_KEPT = 1;
 
-const LockScreen = ({ focusHrs, tasksDone, habitScore, promisesKept, onUnlock, theme }: {
+const AnimatedCircle = Animated.createAnimatedComponent(Circle);
+
+// Earned action — filled & lifted when all four conditions are met, ghosted
+// while locked, and confirmed (green, "UNLOCKED") the moment it's tapped.
+const EarnedButton = ({ theme, allMet, unlocked, onPress }: { theme: any; allMet: boolean; unlocked: boolean; onPress: () => void }) => {
+  const scale = useRef(new Animated.Value(1)).current;
+  const press = (to: number) => Animated.spring(scale, { toValue: to, friction: 6, tension: 220, useNativeDriver: true }).start();
+  const lifted = allMet || unlocked;
+  const bg = unlocked ? '#10B981' : allMet ? theme.textMain : 'transparent';
+  const fg = unlocked ? '#FFFFFF' : allMet ? theme.bg : theme.textSub;
+  const icon = unlocked ? 'check' : allMet ? 'unlock' : 'lock';
+  return (
+    <Animated.View style={{
+      marginTop: 30, alignSelf: 'stretch', transform: [{ scale }],
+      shadowColor: lifted ? bg : 'transparent', shadowOpacity: lifted ? 0.35 : 0,
+      shadowRadius: 14, shadowOffset: { width: 0, height: 6 }, elevation: lifted ? 5 : 0,
+    }}>
+      <TouchableOpacity
+        disabled={!allMet || unlocked} activeOpacity={0.9} onPress={onPress}
+        onPressIn={() => { if (allMet && !unlocked) press(0.96); }} onPressOut={() => press(1)}
+        style={{
+          flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9,
+          paddingVertical: 17, borderRadius: 14, backgroundColor: bg,
+          borderWidth: lifted ? 0 : 1.5, borderColor: theme.border,
+        }}
+      >
+        <Feather name={icon} size={15} color={fg} />
+        <Text style={{ fontSize: 13, fontWeight: '900', letterSpacing: 3, color: fg }}>{unlocked ? 'UNLOCKED' : 'UNLOCK'}</Text>
+      </TouchableOpacity>
+    </Animated.View>
+  );
+};
+
+// LockScreen — the day-3 "Earn access" gate, reskinned to the Ring treatment:
+// one aggregate focal (n/4) over per-condition rows, each with a progress bar
+// and (while its feature is still locked) a hint on how to unlock it. On mount
+// the ring arc and rows fill in a staggered sweep; tapping the earned button
+// hands off to a full-screen unlock ceremony, which opens the gate when done.
+
+// Full-screen unlock ceremony — the "Fuse". A spark races around the ring,
+// drawing it to full, then a soft green pop + the earned statement, and the
+// gate opens. The ring draw + orbiting spark run on reanimated's UI thread
+// (the same ReanimatedCircle / useAnimatedProps path the challenge-detail ring
+// uses) so the sweep stays smooth even while the gate flip is prepared. The
+// backdrop holds on theme.bg and only the content fades at the end — since the
+// unlocked tab shares theme.bg, that hand-off reads as one continuous surface.
+// No flash. Self-timed (~3.3s); plays once.
+const UnlockCeremony = ({ theme, onDone }: { theme: any; onDone: () => void }) => {
+  const GREEN = '#10B981';
+  const size = 124, stroke = 7, r = (size - stroke) / 2, circ = 2 * Math.PI * r;
+  const backdrop = useSharedValue(0);   // screen fade-in (held up)
+  const sealIn = useSharedValue(0);     // ring entrance
+  const fuse = useSharedValue(0);       // 0→1 ring draw + spark orbit
+  const pop = useSharedValue(0);        // soft green shockwave on ignite
+  const pulse = useSharedValue(0);      // ring pulse on ignite
+  const reveal = useSharedValue(0);     // statement
+  const content = useSharedValue(1);    // whole-group fade-out at the end
+  const [burst, setBurst] = useState(false);
+
+  // Fired (on the JS thread) the instant the fuse closes the loop.
+  const ignite = () => {
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    setBurst(true);
+    pop.value = withTiming(1, { duration: 620, easing: ReEasing.out(ReEasing.cubic) });
+    pulse.value = withSequence(withSpring(1, { damping: 5, stiffness: 240 }), withSpring(0, { damping: 10, stiffness: 150 }));
+    reveal.value = withDelay(140, withTiming(1, { duration: 600, easing: ReEasing.out(ReEasing.cubic) }));
+  };
+
+  useEffect(() => {
+    backdrop.value = withTiming(1, { duration: 450, easing: ReEasing.out(ReEasing.cubic) });
+    sealIn.value = withDelay(150, withSpring(1, { damping: 13, stiffness: 130 }));
+    fuse.value = withDelay(450, withTiming(1, { duration: 1450, easing: ReEasing.inOut(ReEasing.cubic) }, (finished) => {
+      'worklet';
+      if (finished) runOnJS(ignite)();
+    }));
+    const tickA = setTimeout(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {}), 950);
+    const tickB = setTimeout(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {}), 1450);
+    // Hold long enough to actually read all three lines (ACCESS EARNED ·
+    // Challenges. · earned, not given.) before the content fades and the gate
+    // opens. The text lands ~2.6s in, so end ~5s ≈ 2.4s of comfortable reading.
+    const end = setTimeout(() => {
+      content.value = withTiming(0, { duration: 600, easing: ReEasing.in(ReEasing.cubic) }, (finished) => {
+        'worklet';
+        if (finished) runOnJS(onDone)();
+      });
+    }, 5000);
+    return () => {
+      clearTimeout(tickA); clearTimeout(tickB); clearTimeout(end);
+      cancelAnimation(backdrop); cancelAnimation(sealIn); cancelAnimation(fuse);
+      cancelAnimation(pop); cancelAnimation(pulse); cancelAnimation(reveal); cancelAnimation(content);
+    };
+  }, []);
+
+  const backdropStyle = useAnimatedStyle(() => ({ opacity: backdrop.value }));
+  const contentStyle = useAnimatedStyle(() => ({ opacity: content.value }));
+  const ringBoxStyle = useAnimatedStyle(() => ({ opacity: sealIn.value, transform: [{ scale: interpolate(sealIn.value, [0, 1], [0.6, 1]) + pulse.value * 0.07 }] }));
+  const popStyle = useAnimatedStyle(() => ({ opacity: interpolate(pop.value, [0, 0.1, 1], [0, 0.5, 0]), transform: [{ scale: interpolate(pop.value, [0, 1], [1, 2.5]) }] }));
+  const ringProps = useAnimatedProps(() => ({ strokeDashoffset: circ * (1 - fuse.value) } as any));
+  const sparkContainerStyle = useAnimatedStyle(() => ({ transform: [{ rotate: `${fuse.value * 360}deg` }] }));
+  const sparkStyle = useAnimatedStyle(() => ({ opacity: interpolate(fuse.value, [0, 0.05, 0.95, 1], [0, 1, 1, 0]) }));
+  const revealStyle = useAnimatedStyle(() => ({ opacity: reveal.value, transform: [{ translateY: interpolate(reveal.value, [0, 1], [14, 0]) }] }));
+
+  return (
+    <Modal visible transparent animationType="none" statusBarTranslucent onRequestClose={() => {}}>
+      <Reanimated.View style={[{ flex: 1, backgroundColor: theme.bg, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 40 }, backdropStyle]}>
+        <Reanimated.View style={[{ alignItems: 'center' }, contentStyle]}>
+          <View style={{ width: size, height: size, alignItems: 'center', justifyContent: 'center', marginBottom: 46 }}>
+            <Reanimated.View pointerEvents="none" style={[{ position: 'absolute', width: size, height: size, borderRadius: size / 2, borderWidth: 3, borderColor: GREEN }, popStyle]} />
+            <Reanimated.View style={[{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }, ringBoxStyle]}>
+              <Svg width={size} height={size} style={{ position: 'absolute', transform: [{ rotate: '-90deg' }] }}>
+                <Circle cx={size / 2} cy={size / 2} r={r} stroke={hexToRgba(theme.textMain, 0.12)} strokeWidth={stroke} fill="none" />
+                <ReanimatedCircle cx={size / 2} cy={size / 2} r={r} stroke={GREEN} strokeWidth={stroke} fill="none" strokeLinecap="round" strokeDasharray={`${circ}`} animatedProps={ringProps} />
+              </Svg>
+              <Reanimated.View style={[{ position: 'absolute', width: 0, height: 0, top: size / 2, left: size / 2 }, sparkContainerStyle]}>
+                <Reanimated.View style={[{ position: 'absolute', width: 13, height: 13, borderRadius: 7, backgroundColor: '#FFFFFF', top: -r - 6.5, left: -6.5, shadowColor: GREEN, shadowOpacity: 0.9, shadowRadius: 8 }, sparkStyle]} />
+              </Reanimated.View>
+            </Reanimated.View>
+            <CompletionBurst color={GREEN} visible={burst} />
+          </View>
+          <Reanimated.View style={[{ alignItems: 'center' }, revealStyle]}>
+            <Text style={{ fontSize: 10, fontWeight: '900', letterSpacing: 4, color: theme.textSub, marginBottom: 16 }}>ACCESS EARNED</Text>
+            <Text style={{ fontSize: 44, fontWeight: '900', letterSpacing: -1.5, color: theme.textMain, textAlign: 'center' }}>Challenges.</Text>
+            <Text style={{ fontSize: 13, fontWeight: '500', fontStyle: 'italic', color: theme.textSub, marginTop: 12, textAlign: 'center' }}>earned, not given.</Text>
+          </Reanimated.View>
+        </Reanimated.View>
+      </Reanimated.View>
+    </Modal>
+  );
+};
+
+const LockScreen = ({ focusHrs, tasksDone, habitScore, promisesKept, deepWorkUnlocked, promiseUnlocked, strengthUnlocked, onUnlock, theme }: {
   focusHrs: number;
   tasksDone: number;
   habitScore: number;
   promisesKept: number;
+  // Whether the FEATURE each condition measures is itself unlocked yet. A
+  // condition whose feature is still locked can't be progressed — instead of
+  // a dead 0/10 bar we show a hint on how to unlock that feature first. Tasks
+  // are core, so that condition is never hidden.
+  deepWorkUnlocked: boolean;
+  promiseUnlocked: boolean;
+  strengthUnlocked: boolean;
   onUnlock: () => void;
   theme: any;
 }) => {
+  const isDark = theme.isDark;
   const focusPct = Math.min(1, focusHrs / LOCK_FOCUS_HOURS);
   const tasksPct = Math.min(1, tasksDone / LOCK_TASKS);
   const habitPct = Math.min(1, habitScore / LOCK_HABIT_SCORE);
   const promisePct = Math.min(1, promisesKept / LOCK_PROMISES_KEPT);
-  const allMet = focusPct >= 1 && tasksPct >= 1 && habitPct >= 1 && promisePct >= 1;
-  const focusAnim = useRef(new Animated.Value(0)).current;
-  const tasksAnim = useRef(new Animated.Value(0)).current;
-  const habitAnim = useRef(new Animated.Value(0)).current;
-  const promiseAnim = useRef(new Animated.Value(0)).current;
-  const unlockAnim = useRef(new Animated.Value(0)).current;
-  const [metLines, setMetLines] = useState<string[]>([]);
+  // Per-condition hints, shown only while the underlying feature is locked.
+  // Copy mirrors the real unlock thresholds: Deep Work + Promise both gate on
+  // 4 active tasks (lib/unlockTriggers.ts); Strength on dayConqueredEver — a
+  // fully conquered day (every scheduled habit done) with 3+ habits
+  // (isDayConquered in lib/habitScore.ts).
+  const focusHint = deepWorkUnlocked ? undefined : 'This requires four active tasks to unlock.';
+  const promiseHint = promiseUnlocked ? undefined : 'This requires four active tasks to unlock.';
+  const habitHint = strengthUnlocked ? undefined : 'This requires completing every habit on a day with three or more to unlock.';
+
+  // One row per condition — mirrors the original Bar's display + met logic. A
+  // locked feature's condition can never count as met: its bar stays empty and
+  // shows the hint, so the gate holds until the user unlocks that feature.
+  const conds = [
+    { key: 'focus',   label: 'Deep work',      pct: focusPct,   display: `${Math.round(focusHrs * 10) / 10} / ${LOCK_FOCUS_HOURS} hrs`,            met: !focusHint && focusPct >= 1,     locked: !!focusHint,   hint: focusHint },
+    { key: 'tasks',   label: 'Tasks done',     pct: tasksPct,   display: `${Math.min(tasksDone, LOCK_TASKS)} / ${LOCK_TASKS}`,                     met: tasksPct >= 1,                   locked: false,         hint: undefined as string | undefined },
+    { key: 'habit',   label: 'Habit strength', pct: habitPct,   display: `${Math.min(habitScore, LOCK_HABIT_SCORE)} / ${LOCK_HABIT_SCORE}`,         met: !habitHint && habitPct >= 1,     locked: !!habitHint,   hint: habitHint },
+    { key: 'promise', label: 'Promises kept',  pct: promisePct, display: `${Math.min(promisesKept, LOCK_PROMISES_KEPT)} / ${LOCK_PROMISES_KEPT}`,  met: !promiseHint && promisePct >= 1, locked: !!promiseHint, hint: promiseHint },
+  ];
+  const metCount = conds.filter(c => c.met).length;
+  const allMet = metCount === 4;
+  const frac = metCount / 4;
+  const size = 132, stroke = 6, r = (size - stroke) / 2, circ = 2 * Math.PI * r;
+
+  const ringAnim = useRef(new Animated.Value(0)).current;
+  const barAnims = useRef([0, 0, 0, 0].map(() => new Animated.Value(0))).current;
+  const [displayCount, setDisplayCount] = useState(0);
+  const [unlocked, setUnlocked] = useState(false);
+  const [ceremony, setCeremony] = useState(false);
+
+  // Mount sweep: the ring arc draws 0 → n/4 while each row's bar fills with a
+  // per-row stagger. useNativeDriver:false — we animate the SVG stroke offset
+  // and layout widths (percentage strings).
   useEffect(() => {
-    Animated.sequence([
-      Animated.timing(focusAnim, { toValue: focusPct, duration: 1100, easing: Easing.out(Easing.cubic), useNativeDriver: false }),
-      Animated.delay(120),
-      Animated.timing(tasksAnim, { toValue: tasksPct, duration: 900, easing: Easing.out(Easing.cubic), useNativeDriver: false }),
-      Animated.delay(120),
-      Animated.timing(habitAnim, { toValue: habitPct, duration: 900, easing: Easing.out(Easing.cubic), useNativeDriver: false }),
-      Animated.delay(120),
-      Animated.timing(promiseAnim, { toValue: promisePct, duration: 900, easing: Easing.out(Easing.cubic), useNativeDriver: false }),
-    ]).start(() => {
-      const lines: string[] = [];
-      if (focusPct >= 1) lines.push('> Focus threshold met.');
-      if (tasksPct >= 1) lines.push('> Task count verified.');
-      if (habitPct >= 1) lines.push('> Habit strength confirmed.');
-      if (promisePct >= 1) lines.push('> Promise kept.');
-      if (lines.length) setMetLines(lines);
-      if (allMet) setTimeout(() => Animated.timing(unlockAnim, { toValue: 1, duration: 600, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start(), 400);
+    const sweep = Animated.parallel([
+      Animated.timing(ringAnim, { toValue: 1, duration: 1000, easing: Easing.out(Easing.cubic), useNativeDriver: false }),
+      Animated.stagger(90, barAnims.map(a => Animated.timing(a, { toValue: 1, duration: 850, delay: 150, easing: Easing.out(Easing.cubic), useNativeDriver: false }))),
+    ]);
+    sweep.start();
+    return () => sweep.stop();
+  }, []);
+
+  // Count the focal number up in step with the ring sweep.
+  useEffect(() => {
+    let last = -1;
+    const id = ringAnim.addListener(({ value }) => {
+      const n = Math.round(value * metCount);
+      if (n !== last) { last = n; setDisplayCount(n); }
     });
-  }, [focusPct, tasksPct, habitPct, promisePct, allMet]);
-  const Bar = ({ label, value, anim, met }: { label: string; value: string; anim: Animated.Value; met: boolean }) => (
-    <View style={{ marginBottom: 20 }}>
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>{met && <Text style={{ color: '#10B981', fontSize: 11 }}>✓</Text>}<Text style={{ color: met ? '#10B981' : theme.textMain, fontSize: 13, fontWeight: '900', letterSpacing: 0.3 }}>{label}</Text></View>
-        <Text style={{ color: met ? '#10B981' : theme.textSub, fontSize: 11, fontWeight: '700' }}>{value}</Text>
-      </View>
-      <View style={{ height: 2, backgroundColor: theme.surface, borderRadius: 1, overflow: 'hidden' }}><Animated.View style={{ height: '100%', borderRadius: 1, backgroundColor: met ? '#10B981' : theme.textMain, width: anim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] }) }} /></View>
-    </View>
-  );
+    return () => ringAnim.removeListener(id);
+  }, [metCount]);
+
+  // Tapping the earned button confirms it (the button morphs to "UNLOCKED"),
+  // then hands off to the full-screen ceremony, which opens the gate when done.
+  const handleUnlock = () => {
+    if (!allMet || ceremony) return;
+    setUnlocked(true);
+    setCeremony(true);
+  };
+
+  const ringColor = allMet || unlocked ? '#10B981' : theme.textMain;
+
   return (
-    <SafeAreaView style={[{ flex: 1, backgroundColor: theme.bg }]}>
-      <StatusBar barStyle={theme.bg === '#000000' ? 'light-content' : 'dark-content'} />
-      {Array.from({ length: 5 }).map((_, i) => <FloatingParticle key={i} color={COLORS[i % COLORS.length]} delay={i * 700} />)}
-      <ScrollView contentContainerStyle={{ padding: 36, paddingTop: 60, flexGrow: 1, justifyContent: 'center' }} showsVerticalScrollIndicator={false}>
-        <Text style={{ fontSize: 10, fontWeight: '900', letterSpacing: 3, color: theme.textSub, marginBottom: 8 }}>SECTOR LOCKED</Text>
-        <Text style={{ fontSize: 32, fontWeight: '900', color: theme.textMain, letterSpacing: -1, marginBottom: 8 }}>Earn access.</Text>
-        <Text style={{ fontSize: 13, color: theme.textSub, lineHeight: 20, marginBottom: 36 }}>Four conditions. All at once.</Text>
-        <Bar label="Deep work" value={`${Math.round(focusHrs * 10) / 10} / ${LOCK_FOCUS_HOURS} hrs`} anim={focusAnim} met={focusPct >= 1} />
-        <Bar label="Tasks done" value={`${Math.min(tasksDone, LOCK_TASKS)} / ${LOCK_TASKS}`} anim={tasksAnim} met={tasksPct >= 1} />
-        <Bar label="Habit strength" value={`${Math.min(habitScore, LOCK_HABIT_SCORE)} / ${LOCK_HABIT_SCORE}`} anim={habitAnim} met={habitPct >= 1} />
-        <Bar label="Promises kept" value={`${Math.min(promisesKept, LOCK_PROMISES_KEPT)} / ${LOCK_PROMISES_KEPT}`} anim={promiseAnim} met={promisePct >= 1} />
-        {metLines.length > 0 && <View style={{ marginTop: 4, marginBottom: 20 }}>{metLines.map((l, i) => <Text key={i} style={{ fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace', color: '#10B981', fontSize: 11, lineHeight: 18 }}>{l}</Text>)}</View>}
-        {allMet && <Animated.View style={{ opacity: unlockAnim, transform: [{ translateY: unlockAnim.interpolate({ inputRange: [0, 1], outputRange: [10, 0] }) }] }}><TouchableOpacity onPress={() => { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); onUnlock(); }} style={{ paddingVertical: 18, borderRadius: 4, borderWidth: 1, borderColor: theme.textMain, alignItems: 'center', marginTop: 8 }}><Text style={{ color: theme.textMain, fontSize: 14, fontWeight: '900', letterSpacing: 3 }}>UNLOCK</Text></TouchableOpacity></Animated.View>}
-        {DEV_MODE && <TouchableOpacity style={{ marginTop: 40, padding: 10, alignSelf: 'center' }} onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); onUnlock(); }}><Text style={{ color: theme.textSub, fontSize: 9, letterSpacing: 3 }}>DEV OVERRIDE</Text></TouchableOpacity>}
+    <SafeAreaView style={{ flex: 1, backgroundColor: theme.bg }}>
+      <StatusBar barStyle={theme.isDark ? 'light-content' : 'dark-content'} />
+      <ScrollView contentContainerStyle={{ paddingHorizontal: 32, paddingVertical: 48, flexGrow: 1, justifyContent: 'center' }} showsVerticalScrollIndicator={false}>
+        <View style={{ alignItems: 'center' }}>
+          <Text style={{ fontSize: 10, fontWeight: '900', letterSpacing: 3, color: theme.textSub, marginBottom: 6 }}>EARN ACCESS</Text>
+          <Text style={{ fontSize: 13, color: theme.textSub, lineHeight: 20 }}>Four conditions, met at once.</Text>
+          <View style={{ width: size, height: size, marginVertical: 28, alignItems: 'center', justifyContent: 'center' }}>
+            <Svg width={size} height={size} style={{ position: 'absolute', transform: [{ rotate: '-90deg' }] }}>
+              <Circle cx={size / 2} cy={size / 2} r={r} stroke={hexToRgba(theme.textMain, 0.1)} strokeWidth={stroke} fill="none" />
+              <AnimatedCircle
+                cx={size / 2} cy={size / 2} r={r} stroke={ringColor} strokeWidth={stroke} fill="none" strokeLinecap="round"
+                strokeDasharray={`${circ}`}
+                strokeDashoffset={ringAnim.interpolate({ inputRange: [0, 1], outputRange: [circ, circ * (1 - frac)] })}
+              />
+            </Svg>
+            <Text style={{ fontSize: 40, fontWeight: '900', color: theme.textMain, fontVariant: ['tabular-nums'] }}>{displayCount}<Text style={{ fontSize: 18, fontWeight: '800', color: theme.textSub }}> / 4</Text></Text>
+          </View>
+          <View style={{ alignSelf: 'stretch', gap: 18 }}>
+            {conds.map((c, i) => {
+              const col = c.locked ? theme.textSub : c.met ? '#10B981' : theme.textMain;
+              return (
+                <View key={c.key} style={{ gap: 8 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                    {c.locked ? <Feather name="lock" size={12} color={theme.textSub} /> : c.met ? <Feather name="check" size={13} color="#10B981" /> : <View style={{ width: 13, height: 13, borderRadius: 7, borderWidth: 1.5, borderColor: theme.textSub }} />}
+                    <Text style={{ flex: 1, fontSize: 13, fontWeight: '700', color: c.met ? theme.textMain : theme.textSub }}>{c.label}</Text>
+                    <Text style={{ fontSize: 12, fontWeight: '700', color: c.met ? '#10B981' : theme.textSub, fontVariant: ['tabular-nums'] }}>{c.locked ? 'Locked' : c.display}</Text>
+                  </View>
+                  <View style={{ height: 2, backgroundColor: hexToRgba(theme.textMain, isDark ? 0.1 : 0.08), overflow: 'hidden' }}>
+                    {!c.locked && <Animated.View style={{ height: '100%', width: barAnims[i].interpolate({ inputRange: [0, 1], outputRange: ['0%', `${c.pct * 100}%`] }), backgroundColor: col }} />}
+                  </View>
+                  {c.locked && c.hint ? <Text style={{ fontSize: 11, color: theme.textSub, marginTop: 2, lineHeight: 16, opacity: 0.85 }}>{c.hint}</Text> : null}
+                </View>
+              );
+            })}
+          </View>
+          <EarnedButton theme={theme} allMet={allMet} unlocked={unlocked} onPress={handleUnlock} />
+        </View>
       </ScrollView>
+      {ceremony && <UnlockCeremony theme={theme} onDone={onUnlock} />}
     </SafeAreaView>
   );
 };
@@ -918,6 +1277,12 @@ const LockGate = ({ onUnlock, theme }: { onUnlock: () => void; theme: any }) => 
   const deepWorkSessions = useAppStore(s => s.deepWorkSessions);
   const promiseStats = useAppStore(s => s.promiseStats);
   const allHabits = useAppStore(s => s.habits);
+  // Each condition measures a feature that may itself still be locked. We pass
+  // these down so the LockScreen can hint at how to unlock the feature instead
+  // of showing a condition the user has no way to make progress on yet.
+  const deepWorkUnlocked = useIsUnlocked(FEATURE_IDS.DEEP_WORK);
+  const promiseUnlocked = useIsUnlocked(FEATURE_IDS.PROMISE);
+  const strengthUnlocked = useIsUnlocked(FEATURE_IDS.STRENGTH_SCORE);
 
   const focusHrs = useMemo(
     () => deepWorkSessions.reduce((acc, s) => acc + (s.durationMs || 0), 0) / 3_600_000,
@@ -940,9 +1305,44 @@ const LockGate = ({ onUnlock, theme }: { onUnlock: () => void; theme: any }) => 
       tasksDone={tasksDone}
       habitScore={habitScore}
       promisesKept={promisesKept}
+      deepWorkUnlocked={deepWorkUnlocked}
+      promiseUnlocked={promiseUnlocked}
+      strengthUnlocked={strengthUnlocked}
       onUnlock={onUnlock}
       theme={theme}
     />
+  );
+};
+
+// ── DAY-2 TEASER ────────────────────────────────────────────────────────────
+// The ONE sanctioned exception to "locked UI is completely absent": on day 2 the
+// Challenges tab appears as a visible-but-locked teaser — a shimmering line (the
+// "Line" motif) over a quiet countdown to the day-3 reveal. Calm + typographic,
+// not gamified, no terminal chrome (per the Challenges redesign's locked
+// aesthetic). The countdown is cosmetic — the real reveal is driven by the
+// CHALLENGES_TAB trigger at daysSinceInstall>=3 (lib/unlockTriggers.ts). First
+// pass on copy/visual — expect a taste tune.
+// Day-2 teaser, pared down to ONE thing: a bare 24h countdown ticking down to
+// the reveal. No title, no shimmer, no copy — just the timer. (revealAt =
+// first-seen + 24h, stamped in app/_layout; null only in the beat before that.)
+const ChallengeTeaser = ({ theme, revealAt }: { theme: any; revealAt: number | null }) => {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const msLeft = revealAt != null ? Math.max(0, revealAt - now) : null;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const text = msLeft == null ? '--:--:--'
+    : `${pad(Math.floor(msLeft / 3_600_000))}:${pad(Math.floor((msLeft % 3_600_000) / 60_000))}:${pad(Math.floor((msLeft % 60_000) / 1000))}`;
+  return (
+    <SafeAreaView style={{ flex: 1, backgroundColor: theme.bg }}>
+      <StatusBar barStyle={theme.isDark ? 'light-content' : 'dark-content'} />
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 40 }}>
+        <Text style={{ fontSize: 10, fontWeight: '900', letterSpacing: 4, color: theme.textSub, marginBottom: 18 }}>UNLOCKS IN</Text>
+        <Text style={{ fontSize: 52, fontWeight: '900', letterSpacing: 1, color: theme.textMain, fontVariant: ['tabular-nums'] }}>{text}</Text>
+      </View>
+    </SafeAreaView>
   );
 };
 
@@ -958,40 +1358,23 @@ const LockGate = ({ onUnlock, theme }: { onUnlock: () => void; theme: any }) => 
 // the user resurrect (one final chance, new deadline) or leave it. The
 // resurrect path is the "take it back" interaction the redesign spec
 // asks for, without rebuilding it.
-const GraveyardScreen = ({ visible, challenges, theme, onClose, onTap }: { visible: boolean; challenges: Challenge[]; theme: any; onClose: () => void; onTap: (c: Challenge) => void; }) => {
-  const scanAnim = useRef(new Animated.Value(0)).current;
-  const loopRef = useRef<Animated.CompositeAnimation | null>(null);
-  useEffect(() => {
-    if (!visible) { loopRef.current?.stop(); loopRef.current = null; scanAnim.setValue(0); return; }
-    loopRef.current = Animated.loop(
-      Animated.timing(scanAnim, { toValue: 1, duration: 8000, easing: Easing.linear, useNativeDriver: false })
-    );
-    loopRef.current.start();
-    return () => { loopRef.current?.stop(); loopRef.current = null; };
-  }, [visible]);
-
-  const dateRange = useMemo(() => {
-    if (challenges.length === 0) return '';
-    const stamps = challenges.map(c => c.buriedAt || c.createdAt).sort((a, b) => a - b);
-    const fmt = (ts: number) => new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).toUpperCase();
-    if (stamps[0] === stamps[stamps.length - 1]) return fmt(stamps[0]);
-    return `${fmt(stamps[0])} – ${fmt(stamps[stamps.length - 1])}`;
-  }, [challenges]);
-  const isDark = theme.bg === '#000000';
-
+// ── GRAVEYARD ────────────────────────────────────────────────────────────
+// Rebuilt from scratch. A quiet place you visit, not a surveillance console —
+// each buried line gets a dignified "headstone": its name, a one-line epitaph
+// in its own words, how far it got, when it was set down, and a calm way to
+// bring it back. No scan-line, no case-ID, no monospace, no blood-red. The
+// flow is unchanged: tapping a stone opens the Review sheet (resurrect / leave).
+const GraveyardScreen = ({ visible, challenges, theme, onClose, onTap, onDelete }: { visible: boolean; challenges: Challenge[]; theme: any; onClose: () => void; onTap: (c: Challenge) => void; onDelete: (c: Challenge) => void; }) => {
+  const isDark = theme.isDark;
   return (
     <Modal visible={visible} animationType="slide" transparent={false} onRequestClose={onClose}>
       <SafeAreaView style={{ flex: 1, backgroundColor: theme.bg }}>
         <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
-        {/* Ambient scan-line — 1px tall, full width, drifting top-to-
-            bottom on an 8s loop. Pure decoration, pointer-events off. */}
-        <Animated.View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, height: 1, backgroundColor: 'rgba(244,63,94,0.06)', top: scanAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] }) }} />
-
-        <View style={{ paddingHorizontal: 24, paddingTop: 8, paddingBottom: 16, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <View style={{ paddingHorizontal: 24, paddingTop: 8, paddingBottom: 18, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <View style={{ flex: 1 }}>
             <Text style={{ fontSize: 28, fontWeight: '900', color: theme.textMain, letterSpacing: -1 }}>Graveyard.</Text>
-            <Text style={{ fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace', color: theme.textSub, fontSize: 10, fontWeight: '700', letterSpacing: 0.5, marginTop: 6 }}>
-              {challenges.length} BURIED{dateRange ? ` · ${dateRange}` : ''}
+            <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '600', marginTop: 6 }}>
+              {challenges.length === 0 ? 'Nothing buried yet.' : `${challenges.length} buried · remembered, not deleted`}
             </Text>
           </View>
           <TouchableOpacity onPress={onClose} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
@@ -1001,69 +1384,55 @@ const GraveyardScreen = ({ visible, challenges, theme, onClose, onTap }: { visib
 
         <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 60 }} showsVerticalScrollIndicator={false}>
           {challenges.length === 0 ? (
-            <View style={{ alignItems: 'center', paddingTop: 80, paddingHorizontal: 24 }}>
-              <Feather name="moon" size={36} color={theme.textSub} style={{ opacity: 0.18, marginBottom: 18 }} />
-              <Text style={{ color: theme.textMain, fontSize: 16, fontWeight: '900', textAlign: 'center', marginBottom: 6 }}>The graveyard is empty.</Text>
-              <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '600', textAlign: 'center', lineHeight: 18, opacity: 0.85 }}>Buried challenges live here. They are not deleted; they are remembered.</Text>
+            <View style={{ alignItems: 'center', paddingTop: 90, paddingHorizontal: 24 }}>
+              <Feather name="moon" size={34} color={theme.textSub} style={{ opacity: 0.16, marginBottom: 18 }} />
+              <Text style={{ color: theme.textMain, fontSize: 16, fontWeight: '800', textAlign: 'center', marginBottom: 6 }}>The graveyard is empty.</Text>
+              <Text style={{ color: theme.textSub, fontSize: 13, fontWeight: '500', textAlign: 'center', lineHeight: 19, opacity: 0.9 }}>What you bury rests here. Not deleted — remembered.</Text>
             </View>
           ) : (
             challenges.map(c => {
-              const caseId = c.id.slice(-6).toUpperCase();
-              const buriedDate = c.buriedAt ? new Date(c.buriedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).toUpperCase() : '';
+              const buriedDate = c.buriedAt ? new Date(c.buriedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
               const msg = getDeadMessage(c);
               const pct = Math.round(Math.min(1, c.current / c.target) * 100);
+              const titleRtl = isRtl(c.title);
+              const muted = hexToRgba(c.color, isDark ? 0.55 : 0.6);
               return (
                 <TouchableOpacity
                   key={c.id}
                   onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); onTap(c); }}
+                  onLongPress={() => onDelete(c)}
+                  delayLongPress={3000}
                   activeOpacity={0.85}
-                  style={{ marginBottom: 12, backgroundColor: theme.surface, borderRadius: 14, borderWidth: 1, borderColor: 'rgba(244,63,94,0.15)', borderLeftWidth: 3, borderLeftColor: 'rgba(244,63,94,0.4)', overflow: 'hidden' }}
+                  style={{ marginBottom: 12, backgroundColor: theme.surface, borderRadius: 18, borderWidth: 1, borderColor: theme.border, padding: 20 }}
                 >
-                  {/* Header strip — case ID + buried date in monospace */}
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 14, paddingTop: 12, paddingBottom: 10 }}>
-                    <Text style={{ fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace', color: theme.textSub, fontSize: 9, fontWeight: '800', letterSpacing: 0.8 }}>#{caseId}</Text>
-                    <Text style={{ fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace', color: '#F43F5E', fontSize: 9, fontWeight: '900', letterSpacing: 1.2, opacity: 0.8 }}>BURIED · {buriedDate}</Text>
-                  </View>
-                  <View style={{ height: 1, backgroundColor: theme.border, marginHorizontal: 14 }} />
-
-                  {/* Title */}
-                  <View style={{ paddingHorizontal: 14, paddingTop: 12 }}>
+                  {/* Name + when it was set down */}
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                    <View style={{ width: 7, height: 7, borderRadius: 3.5, backgroundColor: muted }} />
                     <Text
-                      style={{
-                        color: theme.textMain, fontSize: 16, fontWeight: '900', letterSpacing: -0.2,
-                        textAlign: isRtl(c.title) ? 'right' : 'left',
-                        writingDirection: isRtl(c.title) ? 'rtl' : 'ltr',
-                      }}
-                      numberOfLines={2}
+                      numberOfLines={1}
+                      style={{ flex: 1, color: theme.textMain, fontSize: 17, fontWeight: '800', letterSpacing: -0.3, opacity: 0.92, textAlign: titleRtl ? 'right' : 'left', writingDirection: titleRtl ? 'rtl' : 'ltr' }}
                     >
                       {c.title}
                     </Text>
+                    {buriedDate ? <Text style={{ color: theme.textSub, fontSize: 11, fontWeight: '600' }}>{buriedDate}</Text> : null}
                   </View>
 
-                  {/* Data row — progress + cause */}
-                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingTop: 10 }}>
-                    <Text style={{ fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace', color: theme.textSub, fontSize: 10, fontWeight: '700', letterSpacing: 0.4 }}>
-                      PROGRESS {pct}%
-                    </Text>
-                    <View style={{ width: 3, height: 3, borderRadius: 1.5, backgroundColor: theme.border }} />
-                    <Text style={{ fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace', color: theme.textSub, fontSize: 10, fontWeight: '700', letterSpacing: 0.4 }}>
-                      {c.current}/{c.target} {c.unit?.toUpperCase()}
-                    </Text>
-                    <View style={{ width: 3, height: 3, borderRadius: 1.5, backgroundColor: theme.border }} />
-                    <Text style={{ fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace', color: theme.textSub, fontSize: 10, fontWeight: '700', letterSpacing: 0.4 }}>
-                      CAUSE {msg.cause.toUpperCase()}
-                    </Text>
-                  </View>
-
-                  {/* Progress bar — muted red, 2px */}
-                  <View style={{ marginHorizontal: 14, marginTop: 10, height: 2, backgroundColor: theme.border, borderRadius: 1, overflow: 'hidden' }}>
-                    <View style={{ height: '100%', width: `${pct}%`, backgroundColor: 'rgba(244,63,94,0.4)' }} />
-                  </View>
-
-                  {/* Clinical dead-message in italic monospace */}
-                  <Text style={{ fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace', color: theme.textSub, fontSize: 11, fontStyle: 'italic', lineHeight: 17, paddingHorizontal: 14, paddingTop: 12, paddingBottom: 14, opacity: 0.85 }}>
+                  {/* Epitaph — its own quiet words */}
+                  <Text style={{ color: theme.textSub, fontSize: 13.5, fontWeight: '500', fontStyle: 'italic', lineHeight: 20, marginBottom: 14 }}>
                     {msg.text}
                   </Text>
+
+                  {/* How far it got */}
+                  <View style={{ height: 3, backgroundColor: theme.border, borderRadius: 2, overflow: 'hidden', marginBottom: 8 }}>
+                    <View style={{ height: '100%', width: `${Math.max(2, pct)}%`, backgroundColor: muted, borderRadius: 2 }} />
+                  </View>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '600' }}>Reached {pct}% · {c.current}/{c.target} {c.unit}</Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                      <Text style={{ color: theme.textMain, fontSize: 12, fontWeight: '700', opacity: 0.8 }}>Bring it back</Text>
+                      <Feather name="arrow-right" size={13} color={theme.textSub} />
+                    </View>
+                  </View>
                 </TouchableOpacity>
               );
             })
@@ -1074,11 +1443,31 @@ const GraveyardScreen = ({ visible, challenges, theme, onClose, onTap }: { visib
   );
 };
 
-const HabitLinkModal = ({ visible, challenge, habits, theme, insets, onSave, onClose }: { visible: boolean; challenge: Challenge | null; habits: Habit[]; theme: any; insets: { bottom: number }; onSave: (id: string, ids: string[]) => void; onClose: () => void; }) => {
-  const [selected, setSelected] = useState<string[]>([]);
-  useEffect(() => { if (challenge) setSelected(challenge.linkedHabitIds || []); }, [challenge?.id]);
+const LINK_INCREMENT_MAX = 99;
+
+const HabitLinkModal = ({ visible, challenge, habits, theme, insets, onSave, onClose }: { visible: boolean; challenge: Challenge | null; habits: Habit[]; theme: any; insets: { bottom: number }; onSave: (id: string, links: ChallengeLink[]) => void; onClose: () => void; }) => {
+  // Full link config now, not just a set of ids: each linked habit carries
+  // whether it auto-advances the challenge and by how much.
+  const [links, setLinks] = useState<ChallengeLink[]>([]);
+  useEffect(() => { if (challenge) setLinks((challenge.links || []).map(l => ({ ...l }))); }, [challenge?.id]);
   const active = habits.filter(h => h.status === 'active');
-  const toggle = (id: string) => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setSelected(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id]); };
+  const linkFor = (id: string) => links.find(l => l.habitId === id);
+  const toggleLink = (id: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setLinks(p => p.some(l => l.habitId === id)
+      ? p.filter(l => l.habitId !== id)
+      : [...p, { habitId: id, autoAdvance: true, increment: 1 }]);
+  };
+  const setAuto = (id: string, v: boolean) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setLinks(p => p.map(l => l.habitId === id ? { ...l, autoAdvance: v } : l));
+  };
+  const bumpIncrement = (id: string, delta: number) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setLinks(p => p.map(l => l.habitId === id
+      ? { ...l, increment: Math.max(1, Math.min(LINK_INCREMENT_MAX, l.increment + delta)) }
+      : l));
+  };
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.overlayBottom}>
@@ -1086,14 +1475,63 @@ const HabitLinkModal = ({ visible, challenge, habits, theme, insets, onSave, onC
         <View style={[styles.bottomSheet, { backgroundColor: theme.surface, borderColor: theme.border, paddingBottom: Math.max(insets.bottom, 20) + 16 }]}>
           <View style={[styles.modalDragHandle, { backgroundColor: theme.border }]} />
           <Text style={[styles.modalSectionTitle, { color: theme.textMain }]}>Link Habits</Text>
-          <Text style={{ color: theme.textSub, fontSize: 13, marginBottom: 20, lineHeight: 19 }}>Each day you fully complete a linked habit, this challenge advances by 1.</Text>
+          <Text style={{ color: theme.textSub, fontSize: 13, marginBottom: 20, lineHeight: 19 }}>Completing a linked habit can advance this challenge. Choose whether it does, and by how much.</Text>
           <ScrollView showsVerticalScrollIndicator={false} style={{ flexShrink: 1 }}>
-            {active.length === 0 ? (<View style={{ alignItems: 'center', paddingVertical: 30 }}><Feather name="activity" size={32} color={theme.textSub} style={{ opacity: 0.3, marginBottom: 12 }} /><Text style={{ color: theme.textSub, fontSize: 14, textAlign: 'center' }}>No active habits yet.</Text></View>) : active.map(h => { const isLinked = selected.includes(h.id); return (<TouchableOpacity key={h.id} onPress={() => toggle(h.id)} style={[styles.habitLinkRow, { backgroundColor: isLinked ? h.color + '18' : theme.bg, borderColor: isLinked ? h.color : theme.border }]}><View style={{ width: 30, height: 30, borderRadius: 9, backgroundColor: h.color + '25', justifyContent: 'center', alignItems: 'center' }}><Feather name={h.icon as any} size={15} color={h.color} /></View><Text style={{ color: isLinked ? theme.textMain : theme.textSub, fontWeight: '700', flex: 1, fontSize: 14 }}>{h.title}</Text><View style={[styles.linkCheckbox, { borderColor: isLinked ? h.color : theme.border, backgroundColor: isLinked ? h.color : 'transparent' }]}>{isLinked && <Feather name="check" size={10} color="#FFF" />}</View></TouchableOpacity>); })}
+            {active.length === 0 ? (
+              <View style={{ alignItems: 'center', paddingVertical: 30 }}>
+                <Feather name="activity" size={32} color={theme.textSub} style={{ opacity: 0.3, marginBottom: 12 }} />
+                <Text style={{ color: theme.textSub, fontSize: 14, textAlign: 'center' }}>No active habits yet.</Text>
+              </View>
+            ) : active.map(h => {
+              const link = linkFor(h.id);
+              const isLinked = !!link;
+              return (
+                <View key={h.id} style={{ borderRadius: 12, borderWidth: 1, marginBottom: 8, backgroundColor: isLinked ? h.color + '18' : theme.bg, borderColor: isLinked ? h.color : theme.border, overflow: 'hidden' }}>
+                  {/* Header — tap to link / unlink the habit. */}
+                  <TouchableOpacity onPress={() => toggleLink(h.id)} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12 }}>
+                    <View style={{ width: 30, height: 30, borderRadius: 9, backgroundColor: h.color + '25', justifyContent: 'center', alignItems: 'center' }}>
+                      <Feather name={h.icon as any} size={15} color={h.color} />
+                    </View>
+                    <Text style={{ color: isLinked ? theme.textMain : theme.textSub, fontWeight: '700', flex: 1, fontSize: 14 }}>{h.title}</Text>
+                    <View style={[styles.linkCheckbox, { borderColor: isLinked ? h.color : theme.border, backgroundColor: isLinked ? h.color : 'transparent' }]}>
+                      {isLinked && <Feather name="check" size={10} color="#FFF" />}
+                    </View>
+                  </TouchableOpacity>
+                  {/* Config — only for linked habits. Auto-advance toggle, then an
+                      increment stepper when auto-advance is on. */}
+                  {isLinked && link ? (
+                    <View style={{ paddingHorizontal: 12, paddingBottom: 12, gap: 10 }}>
+                      <View style={{ height: 1, backgroundColor: theme.border, opacity: 0.6 }} />
+                      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <Text style={{ color: theme.textMain, fontSize: 13, fontWeight: '600' }}>Auto-advance on completion</Text>
+                        <Switch value={link.autoAdvance} onValueChange={(v) => setAuto(h.id, v)} trackColor={{ true: h.color }} thumbColor="#FFF" />
+                      </View>
+                      {link.autoAdvance ? (
+                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <Text style={{ color: theme.textSub, fontSize: 13, fontWeight: '600' }}>Advances by</Text>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+                            <TouchableOpacity onPress={() => bumpIncrement(h.id, -1)} disabled={link.increment <= 1} style={{ width: 30, height: 30, borderRadius: 8, borderWidth: 1, borderColor: theme.border, justifyContent: 'center', alignItems: 'center', opacity: link.increment <= 1 ? 0.4 : 1 }}>
+                              <Feather name="minus" size={14} color={theme.textMain} />
+                            </TouchableOpacity>
+                            <Text style={{ color: theme.textMain, fontSize: 16, fontWeight: '900', minWidth: 28, textAlign: 'center' }}>{link.increment}</Text>
+                            <TouchableOpacity onPress={() => bumpIncrement(h.id, 1)} disabled={link.increment >= LINK_INCREMENT_MAX} style={{ width: 30, height: 30, borderRadius: 8, borderWidth: 1, borderColor: theme.border, justifyContent: 'center', alignItems: 'center', opacity: link.increment >= LINK_INCREMENT_MAX ? 0.4 : 1 }}>
+                              <Feather name="plus" size={14} color={theme.textMain} />
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      ) : (
+                        <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '500', opacity: 0.8, fontStyle: 'italic' }}>Linked for reference — won’t move this challenge.</Text>
+                      )}
+                    </View>
+                  ) : null}
+                </View>
+              );
+            })}
             <View style={{ height: 20 }} />
           </ScrollView>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: 10 }}>
             <TouchableOpacity onPress={onClose} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}><Text style={{ color: theme.textSub, fontWeight: '800' }}>Cancel</Text></TouchableOpacity>
-            <TouchableOpacity onPress={() => { if (challenge) { onSave(challenge.id, selected); onClose(); } }} style={[styles.saveBtn, { backgroundColor: theme.textMain }]}><Text style={[styles.saveBtnText, { color: theme.bg }]}>Save Links</Text></TouchableOpacity>
+            <TouchableOpacity onPress={() => { if (challenge) { onSave(challenge.id, links); onClose(); } }} style={[styles.saveBtn, { backgroundColor: theme.textMain }]}><Text style={[styles.saveBtnText, { color: theme.bg }]}>Save Links</Text></TouchableOpacity>
           </View>
         </View>
       </KeyboardAvoidingView>
@@ -1103,41 +1541,56 @@ const HabitLinkModal = ({ visible, challenge, habits, theme, insets, onSave, onC
 
 const ReviewModal = ({ visible, challenge, theme, insets, calSystem, onResurrect, onBury, onClose }: { visible: boolean; challenge: Challenge | null; theme: any; insets: { bottom: number }; calSystem: CalendarSystem; onResurrect: (id: string, ts: number) => void; onBury: (id: string) => void; onClose: () => void; }) => {
   const [newTs, setNewTs] = useState<number | undefined>();
-  const isPermanent = challenge?.deadState === 'resurrected';
+  // Bring-back is once per challenge, and never from the graveyard. `isPermanent`
+  // hides the Resurrect button when the goal already used its one life
+  // (resurrectedBefore — survives burial) OR is already buried. A buried goal
+  // just rests in the graveyard: no bring-back, no re-bury.
+  const buried = challenge?.deadState === 'buried';
+  const isPermanent = buried || challenge?.deadState === 'resurrected' || !!challenge?.resurrectedBefore;
   useEffect(() => { if (visible) setNewTs(undefined); }, [visible]);
   if (!challenge) return null;
-  const progress = Math.min(1, challenge.current / challenge.target), msg = getDeadMessage(challenge);
+  const pct = Math.round(Math.min(1, challenge.current / challenge.target) * 100);
+  const msg = getDeadMessage(challenge);
+  const titleRtl = isRtl(challenge.title);
+  const isDark = theme.isDark;
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <View style={styles.overlayBottom}>
         <TouchableWithoutFeedback onPress={onClose}><View style={StyleSheet.absoluteFill} /></TouchableWithoutFeedback>
         <View style={[styles.bottomSheet, { backgroundColor: theme.surface, borderColor: theme.border, maxHeight: '92%', paddingBottom: Math.max(insets.bottom, 20) }]}>
           <View style={[styles.modalDragHandle, { backgroundColor: theme.border }]} />
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 24 }}>
-            <View style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: 'rgba(244,63,94,0.1)', justifyContent: 'center', alignItems: 'center' }}><Feather name={isPermanent ? 'x-circle' : 'alert-circle'} size={18} color="#F43F5E" /></View>
-            <View style={{ flex: 1 }}>
-              <Text
-                style={{
-                  color: theme.textMain, fontSize: 17, fontWeight: '900',
-                  textAlign: isRtl(challenge.title) ? 'right' : 'left',
-                  writingDirection: isRtl(challenge.title) ? 'rtl' : 'ltr',
-                }}
-              >
-                {challenge.title}
-              </Text>
-              <Text style={{ color: '#F43F5E', fontSize: 9, fontWeight: '900', letterSpacing: 1.5, marginTop: 2 }}>
-                {isPermanent ? 'CLOSED — NO MORE ATTEMPTS' : 'DEADLINE PASSED — REVIEW REQUIRED'}
-              </Text>
-            </View>
+          <View style={{ marginBottom: 22 }}>
+            <Text numberOfLines={2} style={{ color: theme.textMain, fontSize: 20, fontWeight: '800', letterSpacing: -0.4, textAlign: titleRtl ? 'right' : 'left', writingDirection: titleRtl ? 'rtl' : 'ltr' }}>{challenge.title}</Text>
+            <Text style={{ color: theme.textSub, fontSize: 13, fontWeight: '600', marginTop: 4 }}>{isPermanent ? 'This one didn’t make it.' : 'The deadline passed. Your call.'}</Text>
           </View>
           <ScrollView showsVerticalScrollIndicator={false} style={{ flexShrink: 1 }}>
-            <View style={{ backgroundColor: theme.bg, borderRadius: 14, borderWidth: 1, borderColor: theme.border, padding: 16, marginBottom: 20 }}>
-              <View style={{ flexDirection: 'row', gap: 20, marginBottom: 14 }}><View><Text style={{ color: theme.textSub, fontSize: 8, fontWeight: '900', letterSpacing: 1.5 }}>CAUSE</Text><Text style={{ color: theme.textMain, fontSize: 11, fontWeight: '700', marginTop: 3 }}>{msg.cause}</Text></View><View><Text style={{ color: theme.textSub, fontSize: 8, fontWeight: '900', letterSpacing: 1.5 }}>PROGRESS</Text><Text style={{ color: '#F43F5E', fontSize: 11, fontWeight: '700', marginTop: 3 }}>{Math.round(progress * 100)}%</Text></View></View>
-              <View style={{ height: 4, backgroundColor: theme.border, borderRadius: 2, overflow: 'hidden', marginBottom: 12 }}><View style={{ height: '100%', width: `${progress * 100}%`, backgroundColor: '#F43F5E', borderRadius: 2 }} /></View>
-              <Text style={{ fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace', color: theme.textMain, fontSize: 11, lineHeight: 17 }}>{msg.text}</Text>
+            {/* What happened — its own quiet words, the stake you set, how far it got. */}
+            <View style={{ backgroundColor: theme.bg, borderRadius: 16, borderWidth: 1, borderColor: theme.border, padding: 18, marginBottom: 20 }}>
+              <Text style={{ color: theme.textSub, fontSize: 13.5, fontWeight: '500', fontStyle: 'italic', lineHeight: 20, marginBottom: 14 }}>{msg.text}</Text>
+              {challenge.punishment ? (
+                <Text style={{ color: '#F59E0B', fontSize: 12, fontWeight: '700', marginBottom: 14 }}>On the line: {challenge.punishment}</Text>
+              ) : null}
+              <View style={{ height: 3, backgroundColor: theme.border, borderRadius: 2, overflow: 'hidden', marginBottom: 8 }}>
+                <View style={{ height: '100%', width: `${Math.max(2, pct)}%`, backgroundColor: theme.textSub, borderRadius: 2 }} />
+              </View>
+              <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '600' }}>Reached {pct}% · {challenge.current}/{challenge.target} {challenge.unit}</Text>
             </View>
-            {!isPermanent && (<><Text style={[styles.inputLabel, { color: theme.textSub, marginBottom: 12 }]}>RESURRECT — Set a new deadline</Text><CalendarPicker value={newTs} onChange={setNewTs} theme={theme} calSystem={calSystem} /><TouchableOpacity disabled={!newTs} onPress={() => { if (newTs) { onResurrect(challenge.id, newTs); onClose(); } }} style={[styles.saveBtn, { backgroundColor: newTs ? L3_COLOR : theme.border, alignItems: 'center', marginBottom: 12, paddingVertical: 16 }]}><Text style={{ color: newTs ? '#FFF' : theme.textSub, fontWeight: '900', fontSize: 15, letterSpacing: 0.5 }}>RESURRECT</Text><Text style={{ color: newTs ? 'rgba(255,255,255,0.6)' : theme.textSub, fontSize: 10, fontWeight: '600', marginTop: 2 }}>One final attempt.</Text></TouchableOpacity></>)}
-            <TouchableOpacity onPress={() => { onBury(challenge.id); onClose(); }} style={[styles.saveBtn, { backgroundColor: 'rgba(244,63,94,0.08)', borderWidth: 1, borderColor: 'rgba(244,63,94,0.25)', alignItems: 'center', paddingVertical: 16, marginBottom: 20 }]}><Text style={{ color: '#F43F5E', fontWeight: '900', fontSize: 15, letterSpacing: 0.5 }}>BURY</Text><Text style={{ color: 'rgba(244,63,94,0.45)', fontSize: 10, fontWeight: '600', marginTop: 2 }}>Move to the graveyard. Permanent.</Text></TouchableOpacity>
+            {!isPermanent && (
+              <>
+                <Text style={{ color: theme.textSub, fontSize: 11, fontWeight: '900', letterSpacing: 1, marginBottom: 12 }}>BRING IT BACK — PICK A NEW DEADLINE</Text>
+                <CalendarPicker value={newTs} onChange={setNewTs} theme={theme} calSystem={calSystem} />
+                <TouchableOpacity disabled={!newTs} onPress={() => { if (newTs) { onResurrect(challenge.id, newTs); onClose(); } }} style={[styles.saveBtn, { backgroundColor: newTs ? L3_COLOR : theme.border, alignItems: 'center', marginTop: 14, marginBottom: 12, paddingVertical: 16 }]}>
+                  <Text style={{ color: newTs ? '#FFF' : theme.textSub, fontWeight: '800', fontSize: 15 }}>Resurrect</Text>
+                  <Text style={{ color: newTs ? 'rgba(255,255,255,0.65)' : theme.textSub, fontSize: 11, fontWeight: '600', marginTop: 2 }}>One more attempt.</Text>
+                </TouchableOpacity>
+              </>
+            )}
+            {!buried && (
+              <TouchableOpacity onPress={() => { onBury(challenge.id); onClose(); }} style={[styles.saveBtn, { backgroundColor: hexToRgba(L1_COLOR, isDark ? 0.08 : 0.06), borderWidth: 1, borderColor: hexToRgba(L1_COLOR, 0.22), alignItems: 'center', paddingVertical: 16, marginBottom: 20 }]}>
+                <Text style={{ color: L1_COLOR, fontWeight: '800', fontSize: 15 }}>Bury it</Text>
+                <Text style={{ color: hexToRgba(L1_COLOR, 0.5), fontSize: 11, fontWeight: '600', marginTop: 2 }}>Move to the graveyard — remembered, not gone.</Text>
+              </TouchableOpacity>
+            )}
           </ScrollView>
         </View>
       </View>
@@ -1149,77 +1602,52 @@ const SoftDeleteOverlay = ({ visible, title, subtitle, confirmLabel, cancelLabel
   const fadeAnim = useRef(new Animated.Value(0)).current;
   useEffect(() => { Animated.timing(fadeAnim, { toValue: visible ? 1 : 0, duration: visible ? 300 : 200, useNativeDriver: true }).start(); }, [visible]);
   if (!visible) return null;
+  const isDark = theme.isDark;
   return (
-    <Animated.View style={{ position: 'absolute', inset: 0, backgroundColor: theme.bg === '#000000' ? 'rgba(0,0,0,0.93)' : 'rgba(255,255,255,0.93)', zIndex: 300, justifyContent: 'center', alignItems: 'center', padding: 44, opacity: fadeAnim }}>
-      <StatusBar barStyle={theme.bg === '#000000' ? 'light-content' : 'dark-content'} />
-      <Text style={{ fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace', fontSize: 10, color: theme.textSub, letterSpacing: 2, marginBottom: 24 }}>CONFIRMATION REQUIRED</Text>
+    <Animated.View style={{ position: 'absolute', inset: 0, backgroundColor: isDark ? 'rgba(0,0,0,0.93)' : 'rgba(255,255,255,0.94)', zIndex: 300, justifyContent: 'center', alignItems: 'center', padding: 44, opacity: fadeAnim }}>
+      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
+      <Text style={{ fontSize: 10, fontWeight: '900', letterSpacing: 2, color: theme.textSub, marginBottom: 22 }}>HOLD ON</Text>
       <Text
         style={{
-          fontSize: 18, fontWeight: '900', color: theme.textMain,
-          textAlign: 'center', letterSpacing: 0.3,
-          marginBottom: subtitle ? 8 : 36,
+          fontSize: 19, fontWeight: '800', color: theme.textMain,
+          textAlign: 'center', letterSpacing: -0.3,
+          marginBottom: subtitle ? 10 : 34,
           writingDirection: isRtl(title) ? 'rtl' : 'ltr',
         }}
       >
         {title}
       </Text>
-      {subtitle && <Text style={{ fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace', fontSize: 12, color: theme.textSub, textAlign: 'center', lineHeight: 19, marginBottom: 36 }}>{subtitle}</Text>}
-      <TouchableOpacity onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy); onConfirm(); }} style={{ marginBottom: 20, paddingHorizontal: 32, paddingVertical: 14, borderWidth: 1, borderColor: 'rgba(244,63,94,0.4)', borderRadius: 4 }}><Text style={{ color: L1_COLOR, fontSize: 13, fontWeight: '900', letterSpacing: 2 }}>{confirmLabel}</Text></TouchableOpacity>
-      <TouchableOpacity onPress={onCancel} hitSlop={{ top: 15, bottom: 15, left: 30, right: 30 }}><Text style={{ color: theme.textSub, fontSize: 11, fontWeight: '700', letterSpacing: 1 }}>{cancelLabel}</Text></TouchableOpacity>
+      {subtitle && <Text style={{ fontSize: 13, color: theme.textSub, fontWeight: '500', textAlign: 'center', lineHeight: 20, marginBottom: 34 }}>{subtitle}</Text>}
+      <TouchableOpacity onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy); onConfirm(); }} style={{ marginBottom: 18, paddingHorizontal: 34, paddingVertical: 14, borderWidth: 1, borderColor: hexToRgba(L1_COLOR, 0.4), borderRadius: 12 }}><Text style={{ color: L1_COLOR, fontSize: 13, fontWeight: '800', letterSpacing: 1 }}>{confirmLabel}</Text></TouchableOpacity>
+      <TouchableOpacity onPress={onCancel} hitSlop={{ top: 15, bottom: 15, left: 30, right: 30 }}><Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '700' }}>{cancelLabel}</Text></TouchableOpacity>
     </Animated.View>
   );
 };
 
 const GraveyardBuryOverlay = ({ visible, challenge, onConfirm, onCancel, theme }: { visible: boolean; challenge: Challenge | null; onConfirm: () => void; onCancel: () => void; theme: any; }) => {
   const fadeAnim = useRef(new Animated.Value(0)).current;
-  const scanAnim = useRef(new Animated.Value(0)).current;
-  // Capture the loop in a ref so we can stop() it both when `visible`
-  // flips to false AND on unmount. Previously only the visible→hidden
-  // path stopped it; an unmount while visible would leak the loop.
-  const loopRef = useRef<Animated.CompositeAnimation | null>(null);
   useEffect(() => {
-    if (visible) {
-      Animated.timing(fadeAnim, { toValue: 1, duration: 400, useNativeDriver: true }).start();
-      loopRef.current = Animated.loop(
-        Animated.timing(scanAnim, { toValue: 1, duration: 4000, easing: Easing.linear, useNativeDriver: false })
-      );
-      loopRef.current.start();
-    } else {
-      Animated.timing(fadeAnim, { toValue: 0, duration: 200, useNativeDriver: true }).start();
-      loopRef.current?.stop();
-      loopRef.current = null;
-      scanAnim.setValue(0);
-    }
-    return () => { loopRef.current?.stop(); loopRef.current = null; };
+    Animated.timing(fadeAnim, { toValue: visible ? 1 : 0, duration: visible ? 360 : 200, useNativeDriver: true }).start();
   }, [visible]);
   if (!visible || !challenge) return null;
-  const msg = getDeadMessage(challenge); const progress = Math.min(1, challenge.current / challenge.target); const caseId = challenge.id.slice(-6).toUpperCase();
+  const msg = getDeadMessage(challenge);
+  const pct = Math.round(Math.min(1, challenge.current / challenge.target) * 100);
+  const isDark = theme.isDark;
+  const titleRtl = isRtl(challenge.title);
   return (
     <Animated.View style={{ position: 'absolute', inset: 0, backgroundColor: theme.bg, zIndex: 300, opacity: fadeAnim }}>
-      <StatusBar barStyle={theme.bg === '#000000' ? 'light-content' : 'dark-content'} />
-      <Animated.View style={{ position: 'absolute', left: 0, right: 0, height: 1, backgroundColor: 'rgba(244,63,94,0.12)', top: scanAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] }) }} pointerEvents="none" />
+      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
       <SafeAreaView style={{ flex: 1, justifyContent: 'center', padding: 36 }}>
-        {/* Voice — clinical observational, matches DeadCardOverlay's
-            register. Dropped the "∎ CASE FILE" detective framing. */}
-        <Text style={{ fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace', color: '#F43F5E', fontSize: 8, letterSpacing: 3, marginBottom: 24 }}>PERMANENT CLOSURE</Text>
-        <Text style={{ color: theme.textSub, fontSize: 9, fontWeight: '700', letterSpacing: 1, marginBottom: 6, opacity: 0.7 }}>{'#' + caseId}</Text>
-        <Text
-          style={{
-            color: theme.textMain, fontSize: 20, fontWeight: '900', marginBottom: 4,
-            textAlign: isRtl(challenge.title) ? 'right' : 'left',
-            writingDirection: isRtl(challenge.title) ? 'rtl' : 'ltr',
-          }}
-          numberOfLines={2}
-        >
-          {challenge.title}
-        </Text>
-        <Text style={{ color: '#F43F5E', fontSize: 9, fontWeight: '900', letterSpacing: 2, marginBottom: 24 }}>{msg.label}</Text>
-        <Text style={{ fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace', color: theme.textSub, fontSize: 11, lineHeight: 18, marginBottom: 24 }}>{msg.text}</Text>
-        <View style={{ height: 1, backgroundColor: theme.border, marginBottom: 16 }} />
-        <View style={{ flexDirection: 'row', gap: 20, marginBottom: 16 }}><View><Text style={{ color: theme.textSub, fontSize: 8, letterSpacing: 1.5, opacity: 0.7 }}>PROGRESS AT BURIAL</Text><Text style={{ color: theme.textMain, fontSize: 11, fontWeight: '700', marginTop: 2 }}>{Math.round(progress * 100)}%</Text></View><View><Text style={{ color: theme.textSub, fontSize: 8, letterSpacing: 1.5, opacity: 0.7 }}>CAUSE</Text><Text style={{ color: theme.textMain, fontSize: 11, fontWeight: '700', marginTop: 2 }}>{msg.cause}</Text></View></View>
-        <View style={{ height: 2, backgroundColor: theme.border, borderRadius: 1, overflow: 'hidden', marginBottom: 40 }}><View style={{ height: '100%', width: `${progress * 100}%`, backgroundColor: 'rgba(244,63,94,0.3)', borderRadius: 1 }} /></View>
-        <TouchableOpacity onPress={() => { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning); setTimeout(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light), 200); onConfirm(); }} style={{ paddingVertical: 16, borderWidth: 1, borderColor: 'rgba(244,63,94,0.3)', borderRadius: 4, alignItems: 'center', marginBottom: 16 }}><Text style={{ color: '#F43F5E', fontSize: 13, fontWeight: '900', letterSpacing: 2 }}>BURY</Text></TouchableOpacity>
-        <TouchableOpacity onPress={onCancel} style={{ paddingVertical: 12, alignItems: 'center' }}><Text style={{ color: theme.textSub, fontSize: 11, fontWeight: '700', letterSpacing: 1 }}>LEAVE IT</Text></TouchableOpacity>
+        <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 2.5, marginBottom: 22 }}>BURY THIS</Text>
+        <Text numberOfLines={2} style={{ color: theme.textMain, fontSize: 24, fontWeight: '800', letterSpacing: -0.5, marginBottom: 10, textAlign: titleRtl ? 'right' : 'left', writingDirection: titleRtl ? 'rtl' : 'ltr' }}>{challenge.title}</Text>
+        <Text style={{ color: theme.textSub, fontSize: 14, fontWeight: '500', fontStyle: 'italic', lineHeight: 21, marginBottom: 28 }}>{msg.text}</Text>
+        <View style={{ height: 3, backgroundColor: theme.border, borderRadius: 2, overflow: 'hidden', marginBottom: 8 }}>
+          <View style={{ height: '100%', width: `${Math.max(2, pct)}%`, backgroundColor: theme.textSub, borderRadius: 2 }} />
+        </View>
+        <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '600', marginBottom: 8 }}>Reached {pct}% · {challenge.current}/{challenge.target} {challenge.unit}</Text>
+        <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '500', opacity: 0.8, marginBottom: 44 }}>It moves to the graveyard. You can still find it there.</Text>
+        <TouchableOpacity onPress={() => { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning); setTimeout(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light), 200); onConfirm(); }} style={{ paddingVertical: 16, borderWidth: 1, borderColor: hexToRgba(L1_COLOR, 0.35), borderRadius: 12, alignItems: 'center', marginBottom: 14 }}><Text style={{ color: L1_COLOR, fontSize: 14, fontWeight: '800', letterSpacing: 0.5 }}>Bury it</Text></TouchableOpacity>
+        <TouchableOpacity onPress={onCancel} style={{ paddingVertical: 12, alignItems: 'center' }}><Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '700' }}>Leave it</Text></TouchableOpacity>
       </SafeAreaView>
     </Animated.View>
   );
@@ -1233,7 +1661,7 @@ const AchievedModal = ({ visible, challenges, theme, insets, onClose, onMarkInco
   // the platform Alert which felt out of place).
   const [undoTarget, setUndoTarget] = useState<Challenge | null>(null);
   const achieved = challenges.filter(c => c.deadState === 'achieved').sort((a, b) => (b.achievedAt || 0) - (a.achievedAt || 0));
-  const isDark = theme.bg === '#000000';
+  const isDark = theme.isDark;
   // Podium tints — gold / silver / bronze for the top 3 most-recent
   // achievements. Replaced the medal emoji 🥇🥈🥉 (which clashed with
   // the otherwise monochrome Feather-icon UI) with a circular badge
@@ -1458,6 +1886,51 @@ const DetailMilestones = React.memo(({ milestones, color, theme, onToggle }: {
   );
 });
 
+// Source tags for non-manual ledger entries. Manual/bulk logs are the user's
+// own taps, so they read plain (no tag); habit + deep-work advances earn a
+// quiet label so the history shows where the progress came from.
+const LEDGER_SOURCE_LABEL: Record<LedgerSource, string> = { manual: '', bulk: '', habit: 'Habit', deepwork: 'Deep work' };
+
+const DetailLedger = React.memo(({ ledger, theme, calSystem, color }: {
+  ledger: LedgerEntry[]; theme: any; calSystem: CalendarSystem; color: string;
+}) => {
+  const entries = useMemo(() => [...(ledger || [])].sort((a, b) => b.ts - a.ts), [ledger]);
+  if (entries.length === 0) return null;
+  const MAX = 20;
+  const shown = entries.slice(0, MAX);
+  const hidden = entries.length - shown.length;
+  return (
+    <View>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 1.5 }}>HISTORY</Text>
+        <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '700', opacity: 0.6 }}>
+          {entries.length} {entries.length === 1 ? 'entry' : 'entries'}
+        </Text>
+      </View>
+      {shown.map((e, i) => {
+        const positive = e.delta >= 0;
+        const srcLabel = LEDGER_SOURCE_LABEL[e.source];
+        return (
+          <View key={e.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 9, borderBottomWidth: i === shown.length - 1 ? 0 : 1, borderBottomColor: theme.border }}>
+            <Text style={{ color: positive ? color : theme.textSub, fontSize: 15, fontWeight: '900', minWidth: 40 }}>
+              {positive ? '+' : ''}{e.delta}
+            </Text>
+            <Text style={{ color: theme.textMain, fontSize: 13, fontWeight: '600', flex: 1 }}>
+              {formatLedgerStamp(e.ts, calSystem)}
+            </Text>
+            {srcLabel ? (
+              <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '800', letterSpacing: 0.5, opacity: 0.7 }}>{srcLabel}</Text>
+            ) : null}
+          </View>
+        );
+      })}
+      {hidden > 0 ? (
+        <Text style={{ color: theme.textSub, fontSize: 11, fontWeight: '600', opacity: 0.5, marginTop: 10 }}>+{hidden} earlier</Text>
+      ) : null}
+    </View>
+  );
+});
+
 // ─── CHALLENGE DETAIL VIEW ──────────────────────────────────────────────
 // Full-screen surface for a single challenge. Mirrors the Notes-tab
 // reader pattern: chevron-back + Edit button at top, ScrollView body
@@ -1671,9 +2144,34 @@ const ChallengeDetailView = ({
     flushNow();
   }, [flushNow]);
 
+  // 30-day log strip + notes — memoized ABOVE the early return so the hook
+  // order never changes between renders (challenge is null only before the
+  // detail sheet has a selection). Null-safe so they're inert when empty.
+  const logDates = challenge?.logDates || [];
+  const last30 = useMemo(() => {
+    const result: { str: string; logged: boolean; isToday: boolean }[] = [];
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const set = new Set(logDates);
+    for (let i = 29; i >= 0; i--) {
+      const d = new Date(today);
+      d.setDate(today.getDate() - i);
+      const str = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      result.push({ str, logged: set.has(str), isToday: i === 0 });
+    }
+    return result;
+  }, [logDates]);
+  const loggedInLast30 = useMemo(
+    () => last30.reduce((n, c) => n + (c.logged ? 1 : 0), 0),
+    [last30]
+  );
+  const notes = useMemo(
+    () => (challenge?.noteEntries || []).slice().sort((a, b) => b.createdAt - a.createdAt),
+    [challenge?.noteEntries]
+  );
+
   if (!challenge) return null;
 
-  const isDark = theme.bg === '#000000';
+  const isDark = theme.isDark;
   const progress = Math.min(1, challenge.current / challenge.target);
   const isDone = challenge.current >= challenge.target;
   const percent = Math.round(progress * 100);
@@ -1695,36 +2193,10 @@ const ChallengeDetailView = ({
     return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   })();
 
-  // 30-day log strip — one cell per day, oldest to newest, today on
-  // the right edge. Memoized on logDates so rapid +1 taps don't
-  // rebuild the 30-element array every render (Date math + map were
-  // showing up as a hot path during spam-tap testing).
-  const logDates = challenge.logDates || [];
-  const last30 = useMemo(() => {
-    const result: { str: string; logged: boolean; isToday: boolean }[] = [];
-    const today = new Date(); today.setHours(0, 0, 0, 0);
-    const set = new Set(logDates);
-    for (let i = 29; i >= 0; i--) {
-      const d = new Date(today);
-      d.setDate(today.getDate() - i);
-      const str = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-      result.push({ str, logged: set.has(str), isToday: i === 0 });
-    }
-    return result;
-  }, [logDates]);
-  const loggedInLast30 = useMemo(
-    () => last30.reduce((n, c) => n + (c.logged ? 1 : 0), 0),
-    [last30]
-  );
-
-  // Notes — newest first. Editable for 3 days after creation; older
-  // entries become read-only so the journal log feels like a record
-  // rather than a scratchpad.
+  // Note edit window — entries older than this become read-only, so the journal
+  // log reads like a record rather than a scratchpad. (last30 / loggedInLast30 /
+  // notes are memoized above the early return so the hook order stays stable.)
   const NOTE_EDIT_WINDOW_MS = 3 * 86400000;
-  const notes = useMemo(
-    () => (challenge.noteEntries || []).slice().sort((a, b) => b.createdAt - a.createdAt),
-    [challenge.noteEntries]
-  );
 
   const startEdit = (noteId: string, text: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -1935,6 +2407,14 @@ const ChallengeDetailView = ({
               </View>
             ) : null}
 
+            {/* History ledger — every logged event with its amount + time.
+                Hidden until there's at least one entry. */}
+            {challenge.ledger && challenge.ledger.length > 0 ? (
+              <View style={cardStyle}>
+                <DetailLedger ledger={challenge.ledger} theme={theme} calSystem={calSystem} color={challenge.color} />
+              </View>
+            ) : null}
+
             {/* Notes — dated journal entries. Adding happens here; the
                 ×-remove control is intentionally only on the edit sheet
                 so this surface stays focused on writing. Entries are
@@ -2062,12 +2542,166 @@ const ChallengeDetailView = ({
   );
 };
 
+
+// The React.memo'd cards above are anonymous arrows; give them display names
+// (React DevTools + react/display-name).
+ActivityRingCard.displayName = 'ActivityRingCard';
+RosterCard.displayName = 'RosterCard';
+DetailLogStrip.displayName = 'DetailLogStrip';
+DetailDescription.displayName = 'DetailDescription';
+DetailMilestones.displayName = 'DetailMilestones';
+DetailLedger.displayName = 'DetailLedger';
+
+// ── THE LEDGER ──────────────────────────────────────────────────────────────
+// Rewards to claim, punishments to pay. Reads/writes the store; stakes are
+// auto-collected from won/buried challenges (see ChallengesScreen) and added by
+// hand. Empty sections hide; the header entry hides entirely when it's empty.
+const LEDGER_REWARD = '#F59E0B';
+const LEDGER_PUNISH = '#F43F5E';
+
+const LEDGER_VOID = '#10B981';  // a punishment forgiven (came back and won)
+const LedgerRow = ({ item, theme, note, voided, onToggle, onRemove }: { item: Stake; theme: any; note?: string; voided?: boolean; onToggle: () => void; onRemove: () => void }) => {
+  const color = item.kind === 'reward' ? LEDGER_REWARD : LEDGER_PUNISH;
+  const settled = item.done || !!voided;
+  const mark = voided ? LEDGER_VOID : color;
+  return (
+    <Reanimated.View entering={FadeInDown.duration(220)} exiting={FadeOut.duration(150)} layout={LinearTransition.springify().damping(20)}
+      style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 11 }}>
+      <TouchableOpacity onPress={onToggle} disabled={!!voided} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} activeOpacity={0.7}
+        style={{ width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: mark, backgroundColor: settled ? mark : 'transparent', alignItems: 'center', justifyContent: 'center' }}>
+        {settled ? <Feather name="check" size={14} color="#FFFFFF" /> : null}
+      </TouchableOpacity>
+      <View style={{ flex: 1 }}>
+        <Text style={{ fontSize: 15, fontWeight: '600', color: settled ? theme.textSub : theme.textMain, textDecorationLine: settled ? 'line-through' : 'none' }}>{item.text}</Text>
+        {note ? <Text style={{ fontSize: 11, fontWeight: '600', fontStyle: 'italic', color: voided ? LEDGER_VOID : theme.textSub, marginTop: 2 }}>{note}</Text> : null}
+      </View>
+      {item.done && !voided ? <Text style={{ fontSize: 9, fontWeight: '900', letterSpacing: 1.5, color }}>{item.kind === 'reward' ? 'CLAIMED' : 'PAID'}</Text> : null}
+      <TouchableOpacity onPress={onRemove} hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }} activeOpacity={0.6}>
+        <Feather name="x" size={16} color={theme.textSub} />
+      </TouchableOpacity>
+    </Reanimated.View>
+  );
+};
+
+const LedgerModal = ({ visible, theme, insets, onClose }: { visible: boolean; theme: any; insets: { bottom: number }; onClose: () => void }) => {
+  const stakes = useAppStore(s => s.stakes);
+  const addStake = useAppStore(s => s.addStake);
+  const toggleStake = useAppStore(s => s.toggleStake);
+  const removeStake = useAppStore(s => s.removeStake);
+  const challenges = useAppStore(s => s.challenges) as Challenge[];
+  const [kind, setKind] = useState<StakeKind>('reward');
+  const [text, setText] = useState('');
+  // The footer's safe-area paddingBottom (home-indicator clearance) would stack on
+  // top of the keyboard lift, leaving the add-bar floating ~34px above the keyboard.
+  // Collapse it toward a flush gap as the keyboard rises (progress 0→1), so the bar
+  // sits right on the keyboard top. Same pattern as todo.tsx's sheetBottomPadStyle.
+  const restPadBottom = Math.max(insets.bottom, 16);
+  const kbAnim = useReanimatedKeyboardAnimation();
+  const footerPadStyle = useAnimatedStyle(() => ({
+    paddingBottom: restPadBottom - (restPadBottom - 10) * kbAnim.progress.value,
+  }));
+  const bySettled = (a: Stake, b: Stake) => (a.done ? 1 : 0) - (b.done ? 1 : 0);
+  const rewards = stakes.filter(s => s.kind === 'reward').sort(bySettled);
+  const punishments = stakes.filter(s => s.kind === 'punishment').sort(bySettled);
+  const empty = stakes.length === 0;
+  const allSettled = !empty && stakes.every(s => s.done);
+  const add = () => { if (!text.trim()) return; Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); addStake(kind, text); setText(''); };
+  const onToggle = (id: string) => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); toggleStake(id); };
+
+  // A punishment carries its source challenge's fate: resurrected & ongoing →
+  // "on trial"; came back and won → voided (no punishment owed).
+  const punishNote = (stake: Stake): { note: string; voided: boolean } | null => {
+    if (!stake.sourceId) return null;
+    const ch = challenges.find(c => c.id === stake.sourceId);
+    if (!ch) return null;
+    if (ch.deadState === 'achieved') return { note: 'Came back — no punishment owed.', voided: true };
+    if (ch.deadState === 'active' && ch.resurrectedBefore) return { note: 'On trial — resurrected, not yet settled.', voided: false };
+    return null;
+  };
+
+  const section = (title: string, sub: string, color: string, items: Stake[]) => {
+    if (!items.length) return null;
+    const left = items.filter(i => !i.done).length;
+    return (
+      <Reanimated.View layout={LinearTransition.springify().damping(20)} style={{ marginBottom: 6 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, marginTop: 14, marginBottom: 2 }}>
+          <Feather name={title === 'REWARDS' ? 'gift' : 'alert-triangle'} size={12} color={color} />
+          <Text style={{ fontSize: 10, fontWeight: '900', letterSpacing: 1.5, color: theme.textMain }}>{title}</Text>
+          <Text style={{ fontSize: 10, fontWeight: '700', color: theme.textSub }}>· {left ? `${left} ${sub}` : 'all settled'}</Text>
+        </View>
+        {items.map(it => {
+          const n = it.kind === 'punishment' ? punishNote(it) : null;
+          return <LedgerRow key={it.id} item={it} theme={theme} note={n?.note} voided={n?.voided} onToggle={() => onToggle(it.id)} onRemove={() => removeStake(it.id)} />;
+        })}
+      </Reanimated.View>
+    );
+  };
+
+  return (
+    <Modal visible={visible} animationType="slide" onRequestClose={onClose} statusBarTranslucent>
+      <SafeAreaView style={{ flex: 1, backgroundColor: theme.bg }} edges={['top']}>
+        <StatusBar barStyle={theme.isDark ? 'light-content' : 'dark-content'} />
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
+          <View style={{ paddingHorizontal: 24, paddingTop: 12, paddingBottom: 16, flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={{ fontSize: 30, fontWeight: '900', letterSpacing: -1, color: theme.textMain }}>The Ledger</Text>
+              <Text style={{ fontSize: 13, fontWeight: '500', color: theme.textSub, marginTop: 4 }}>Promises to keep, and debts to pay.</Text>
+            </View>
+            <TouchableOpacity onPress={onClose} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
+              <Feather name="x" size={26} color={theme.textMain} />
+            </TouchableOpacity>
+          </View>
+          <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingHorizontal: 24, paddingBottom: 16 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+            {empty ? (
+              <View style={{ alignItems: 'center', paddingVertical: 72 }}>
+                <Text style={{ fontSize: 18, fontWeight: '800', color: theme.textMain }}>The slate is clean.</Text>
+                <Text style={{ fontSize: 13, color: theme.textSub, marginTop: 6 }}>Set a stake below.</Text>
+              </View>
+            ) : (
+              <>
+                {section('REWARDS', 'to claim', LEDGER_REWARD, rewards)}
+                {section('PUNISHMENTS', 'to pay', LEDGER_PUNISH, punishments)}
+                {allSettled ? <Text style={{ fontSize: 12, fontWeight: '700', fontStyle: 'italic', color: theme.textSub, textAlign: 'center', marginTop: 20 }}>Every debt paid, every prize claimed.</Text> : null}
+              </>
+            )}
+          </ScrollView>
+          <Reanimated.View style={[{ paddingHorizontal: 24, paddingTop: 14, borderTopWidth: 1, borderColor: theme.border, gap: 10 }, footerPadStyle]}>
+            <View style={{ flexDirection: 'row', gap: 8 }}>
+              {(['reward', 'punishment'] as StakeKind[]).map(k => {
+                const active = kind === k;
+                const c = k === 'reward' ? LEDGER_REWARD : LEDGER_PUNISH;
+                return (
+                  <TouchableOpacity key={k} onPress={() => setKind(k)} activeOpacity={0.8}
+                    style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8, paddingHorizontal: 14, borderRadius: 10, borderWidth: 1.5, borderColor: active ? c : theme.border, backgroundColor: active ? hexToRgba(c, 0.14) : 'transparent' }}>
+                    <Feather name={k === 'reward' ? 'gift' : 'alert-triangle'} size={13} color={active ? c : theme.textSub} />
+                    <Text style={{ fontSize: 12, fontWeight: '800', color: active ? c : theme.textSub }}>{k === 'reward' ? 'Reward' : 'Punishment'}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+              <TextInput value={text} onChangeText={setText} onSubmitEditing={add} returnKeyType="done"
+                placeholder={kind === 'reward' ? 'A reward worth earning…' : 'A debt worth avoiding…'} placeholderTextColor={theme.textSub}
+                style={{ flex: 1, fontSize: 15, fontWeight: '600', color: theme.textMain, backgroundColor: theme.surface, borderRadius: 12, borderWidth: 1, borderColor: theme.border, paddingHorizontal: 14, paddingVertical: 12 }} />
+              <TouchableOpacity onPress={add} activeOpacity={0.85} disabled={!text.trim()}
+                style={{ width: 46, height: 46, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: text.trim() ? (kind === 'reward' ? LEDGER_REWARD : LEDGER_PUNISH) : theme.border }}>
+                <Feather name="plus" size={22} color={text.trim() ? '#FFFFFF' : theme.textSub} />
+              </TouchableOpacity>
+            </View>
+          </Reanimated.View>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
+    </Modal>
+  );
+};
+
 // ─── MAIN SCREEN ───
 export default function ChallengesScreen() {
   const insets = useSafeAreaInsets();
 
   // Clean store selectors — no more (s as any) casts
   const isDarkMode = useAppStore(s => s.isDarkMode);
+  const themeMode = useAppStore(s => s.themeMode);
   const calSystem = useAppStore(s => s.calendarType) as CalendarSystem;
   const toggleCalendar = useAppStore(s => s.toggleCalendar);
   const allHabits = useAppStore(s => s.habits) as Habit[];
@@ -2092,6 +2726,23 @@ export default function ChallengesScreen() {
     if (!challengesSeeded) setChallengesSeeded(true);
   }, [challengesSeeded, setChallengesSeeded]);
 
+  // (DEV usage-simulation seed removed for ship — the tab starts empty.)
+
+  // ── Challenge deadline notifications ──────────────────────────────────────
+  // Full resync (cancel + reschedule) whenever any live deadline meaningfully
+  // changes. The signature folds in id / deadline / state / done-ness / whether
+  // a consequence exists, so create, edit, resurrect, bury, trash, complete, or
+  // editing the stake all retrigger it — and nothing else does (a +1 tap that
+  // doesn't cross a boundary leaves the signature unchanged). See
+  // lib/challengeNotifications.ts for the schedule (T-3d / T-1d / expiry).
+  const challengeNotifSignature = useMemo(
+    () => challenges.map(c => `${c.id}:${c.deadlineTs || 0}:${c.deadState}:${c.current >= c.target ? 1 : 0}:${(c.punishment || '').trim() ? 1 : 0}`).join('|'),
+    [challenges]
+  );
+  useEffect(() => {
+    syncChallengeNotifications(useAppStore.getState().challenges as Challenge[]);
+  }, [challengeNotifSignature]);
+
   // ── Lock-screen gating ────────────────────────────────────────────────
   // Just the bool here. The actual metric computation lives inside
   // <LockGate/> (rendered only when !challengesUnlocked) so unlocked
@@ -2099,6 +2750,57 @@ export default function ChallengesScreen() {
   // tasks, and walking every habit's history on every mount.
   const challengesUnlocked = useAppStore(s => s.challengesUnlocked);
   const setChallengesUnlocked = useAppStore(s => s.setChallengesUnlocked);
+  // "Show me everything" returning users bypass the conditions gate — unlockAll
+  // sets allFeaturesUnlocked but not the legacy challengesUnlocked flag.
+  const allFeaturesUnlocked = useAppStore(s => s.allFeaturesUnlocked);
+  // New progressive-unlock gate for the whole tab (day 3). Replaces the legacy
+  // criteria LockGate below. markDotSeen clears the tab-icon dot once the user
+  // opens the tab.
+  const daysSinceInstall = useDaysSinceInstall();
+  const challengesTeaserSeenAt = useAppStore(s => s.challengesTeaserSeenAt);
+  const markDotSeen = useAppStore(s => s.markDotSeen);
+  const milestonesUnlocked = useIsUnlocked(FEATURE_IDS.MILESTONES);
+  const linkedHabitsUnlocked = useIsUnlocked(FEATURE_IDS.LINKED_HABITS);
+  const linkedHabitsIsNew = useIsNew(FEATURE_IDS.LINKED_HABITS);
+  const capsuleLockUnlocked = useIsUnlocked(FEATURE_IDS.CAPSULE_LOCK);
+  const stakes = useAppStore(s => s.stakes);
+  const addStake = useAppStore(s => s.addStake);
+  const ledgerUnlocked = useAppStore(s => s.ledgerUnlocked);
+  const setLedgerUnlocked = useAppStore(s => s.setLedgerUnlocked);
+  // Stakes still needing action (excludes settled + punishments voided by a comeback).
+  const ledgerUnsettled = useMemo(() => stakes.filter(s => {
+    if (s.done) return false;
+    if (s.kind === 'punishment' && s.sourceId) { const ch = challenges.find(c => c.id === s.sourceId); if (ch?.deadState === 'achieved') return false; }
+    return true;
+  }).length, [stakes, challenges]);
+  useFocusEffect(useCallback(() => { markDotSeen(FEATURE_IDS.CHALLENGES_TAB); }, [markDotSeen]));
+
+  // The Ledger unlocks the first time any challenge ends (won or dead) and stays
+  // unlocked. A won challenge drops its reward to claim; a dead one (deadline
+  // passed) drops its punishment to pay — kept even if it's later resurrected.
+  // Dedup'd by challenge id so each contributes at most one reward / punishment.
+  useEffect(() => {
+    if (!ledgerUnlocked && challenges.some(c => c.deadState === 'achieved' || c.deadState === 'dead' || c.deadState === 'buried')) setLedgerUnlocked(true);
+    const seen = new Set(useAppStore.getState().stakes.filter(s => s.sourceId).map(s => `${s.sourceId}:${s.kind}`));
+    challenges.forEach(c => {
+      const reward = c.reward?.trim();
+      const punishment = c.punishment?.trim();
+      if (c.deadState === 'achieved' && reward && !seen.has(`${c.id}:reward`)) { addStake('reward', reward, c.id); seen.add(`${c.id}:reward`); }
+      if ((c.deadState === 'dead' || c.deadState === 'buried') && punishment && !seen.has(`${c.id}:punishment`)) { addStake('punishment', punishment, c.id); seen.add(`${c.id}:punishment`); }
+    });
+  }, [challenges, addStake, ledgerUnlocked, setLedgerUnlocked]);
+
+  // Roster load-sweep replay. The navigator caches this screen, so the cards'
+  // mount animation only plays the first time. Bump a key on every focus so the
+  // 0→value sweep replays each time the tab is opened — skipping the very first
+  // focus (which coincides with mount, where the animation already runs) so it
+  // doesn't double-fire.
+  const [rosterAnimKey, setRosterAnimKey] = useState(0);
+  const rosterFirstFocus = useRef(true);
+  useFocusEffect(useCallback(() => {
+    if (rosterFirstFocus.current) { rosterFirstFocus.current = false; return; }
+    setRosterAnimKey(k => k + 1);
+  }, []));
 
   // Full-screen detail view target. Tapping a card opens this view;
   // long-pressing the card jumps straight to the add/edit sheet. The
@@ -2135,7 +2837,9 @@ export default function ChallengesScreen() {
 
   const [softDeleteTarget, setSoftDeleteTarget] = useState<Challenge | null>(null);
   const [softDeleteMode, setSoftDeleteMode] = useState<'trash' | 'forever' | null>(null);
+  const [purgeAllVisible, setPurgeAllVisible] = useState(false);
   const [graveyardBuryTarget, setGraveyardBuryTarget] = useState<Challenge | null>(null);
+  const [ledgerOpen, setLedgerOpen] = useState(false);
 
   // Form State
   const [title, setTitle] = useState(''); const [targetV, setTargetV] = useState(''); const [unit, setUnit] = useState('');
@@ -2162,7 +2866,7 @@ export default function ChallengesScreen() {
   const [capsuleEnabled, setCapsuleEnabled] = useState(false);
   const [capsuleMessage, setCapsuleMessage] = useState('');
 
-  const theme = useMemo(() => ({ bg: isDarkMode ? '#000000' : '#F8F9FA', surface: isDarkMode ? '#0A0A0A' : '#FFFFFF', border: isDarkMode ? '#1A1A1A' : '#E5E5EA', textMain: isDarkMode ? '#FFFFFF' : '#111111', textSub: isDarkMode ? '#666666' : '#888888', danger: '#F43F5E', success: '#10B981' }), [isDarkMode]);
+  const theme = useMemo(() => getTheme(themeMode), [themeMode]);
   const renderBackdrop = useCallback((props: any) => <BottomSheetBackdrop {...props} disappearsOnIndex={-1} appearsOnIndex={0} opacity={0.6} />, []);
 
   useFocusEffect(useCallback(() => {
@@ -2275,8 +2979,11 @@ export default function ChallengesScreen() {
 
   const checkDeadTransition = (c: Challenge): Challenge => {
     if (shouldBeDead(c)) {
-      if (c.deadState === 'resurrected' && c.wasResurrected) setTimeout(() => handleAchievementQueue(['recidivist']), 100);
-      return { ...c, deadState: c.deadState === 'resurrected' ? 'resurrected' : 'dead' };
+      // Resurrected challenges come back as 'active' (see handleResurrect). If a
+      // previously-resurrected one dies again it's a recidivist — and dead for
+      // good: resurrectedBefore keeps the bring-back button hidden from here on.
+      if (c.resurrectedBefore) setTimeout(() => handleAchievementQueue(['recidivist']), 100);
+      return { ...c, deadState: 'dead' };
     }
     if (c.current >= c.target && c.deadState === 'active') return { ...c, deadState: 'achieved', achievedAt: Date.now() };
     return c;
@@ -2333,7 +3040,9 @@ export default function ChallengesScreen() {
       urgencyStyle: 'auto',
       createdAt: now,
       milestones: (preset.milestones || []).map(m => ({ ...m })),
-      linkedHabitIds: [],
+      links: [],
+      ledger: [],
+      cadence: inferChallengeCadence(preset.target, preset.unit),
       deadState: 'active',
       // The preset's explainer becomes the static description — it's
       // a description of the rule, not a journal entry, so it belongs
@@ -2422,15 +3131,17 @@ export default function ChallengesScreen() {
     if (editingChallenge) {
       saveChallenges(currentChallenges.map(c => c.id === editingChallenge.id ? checkDeadTransition({ ...c, ...enrichedData }) : c));
     } else {
-      const newC: Challenge = { id: challengeId, current: 0, createdAt: Date.now(), linkedHabitIds: [], deadState: 'active', logDates: [], ...enrichedData } as any;
+      const newC: Challenge = { id: challengeId, current: 0, createdAt: Date.now(), links: [], ledger: [], cadence: inferChallengeCadence(data.target, data.unit), deadState: 'active', logDates: [], ...enrichedData } as any;
       saveChallenges([...currentChallenges, newC], true);
+      // Monotonic unlock counter — first challenge unlocks MILESTONES.
+      useAppStore.getState().incrementTotalChallengesCreated();
       if (currentChallenges.length + 1 >= 5) handleAchievementQueue(['architect']);
     }
     setEditingChallenge(null);
     setAddEditOpen(false);
   }, [title, description, targetV, unit, noteEntries, deadlineTs, urgencyStyle, reward, punishment, milestones, color, icon, editingChallenge, handleAchievementQueue, capsuleEnabled, capsuleMessage]);
 
-  const updateProgress = useCallback((challengeId: string, amount: number) => {
+  const updateProgress = useCallback((challengeId: string, amount: number, source: LedgerSource = 'manual') => {
     const currentChallenges = useAppStore.getState().challenges as Challenge[];
     const challenge = currentChallenges.find(c => c.id === challengeId);
     if (!challenge) return;
@@ -2445,13 +3156,19 @@ export default function ChallengesScreen() {
     const todayStr = todayDateStr();
     const existingLogs: string[] = (challenge as any).logDates || [];
     const newLogDates = existingLogs.includes(todayStr) ? existingLogs : [...existingLogs, todayStr];
+    // Ledger: record the delta actually applied (clamping at 0/target can make
+    // it smaller than `amount`); a no-op change writes nothing.
+    const appliedDelta = next - challenge.current;
+    const newLedger = appliedDelta !== 0
+      ? [...(challenge.ledger || []), makeLedgerEntry(appliedDelta, source)]
+      : (challenge.ledger || []);
 
     if (!was && next >= challenge.target) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       const currentAchs = useAppStore.getState().achievements as Achievement[];
       const isFirst = !currentAchs.some(a => a.id === 'first_blood' && a.unlockedAt);
       const wasRes = !!(challenge.wasResurrected || challenge.deadState === 'resurrected');
-      const updated = checkDeadTransition({ ...challenge, current: next, lastLoggedAt: now, wasResurrected: wasRes || undefined, logDates: newLogDates } as any);
+      const updated = checkDeadTransition({ ...challenge, current: next, lastLoggedAt: now, wasResurrected: wasRes || undefined, logDates: newLogDates, ledger: newLedger } as any);
       saveChallenges(currentChallenges.map(c => c.id === (updated as any).id ? updated : c), true);
       setDetailChallengeId(prev => prev === challengeId ? null : prev);
 
@@ -2472,13 +3189,13 @@ export default function ChallengesScreen() {
       setCompletionCeremony({ challenge: { ...challenge, current: next }, isFirst, wasResurrected: wasRes });
       if (achievementIds.length > 0) handleAchievementQueue(achievementIds);
     } else {
-      const updated = checkDeadTransition({ ...challenge, current: next, lastLoggedAt: now, logDates: newLogDates } as any);
+      const updated = checkDeadTransition({ ...challenge, current: next, lastLoggedAt: now, logDates: newLogDates, ledger: newLedger } as any);
       saveChallenges(currentChallenges.map(c => c.id === (updated as any).id ? updated : c));
 
       const hr = new Date().getHours();
       const achievementIds: AchievementId[] = [];
       if (hr >= 0 && hr < 4) achievementIds.push('insomniac');
-      const consecutiveDays = countConsecutiveLogDays(newLogDates);
+      const consecutiveDays = consecutiveDaysEndingToday(newLogDates);
       if (consecutiveDays >= 7) achievementIds.push('obsessive');
       if (achievementIds.length > 0) handleAchievementQueue(achievementIds);
     }
@@ -2503,6 +3220,12 @@ export default function ChallengesScreen() {
     saveChallenges((useAppStore.getState().challenges as Challenge[]).map(c => c.id === id ? { ...c, deadState: 'active' as DeadState, deletedAt: undefined } : c), true);
     handleAchievementQueue(['archaeologist']);
   }, [handleAchievementQueue]);
+  // Bulk-purge the whole trash — the "Purge all" counterpart to per-item
+  // Delete Forever. Confirmed through the same SoftDeleteOverlay.
+  const confirmPurgeAll = useCallback(() => {
+    saveChallenges((useAppStore.getState().challenges as Challenge[]).filter(c => c.deadState !== 'trash'), true);
+    setPurgeAllVisible(false);
+  }, []);
 
   const requestBury = useCallback((id: string) => {
     const c = (useAppStore.getState().challenges as Challenge[]).find(x => x.id === id);
@@ -2525,12 +3248,16 @@ export default function ChallengesScreen() {
 
   const handleResurrect = useCallback((id: string, ts: number) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    saveChallenges((useAppStore.getState().challenges as Challenge[]).map(c => c.id === id ? { ...c, deadState: 'resurrected' as DeadState, deadlineTs: ts, reviewedAt: Date.now(), wasResurrected: true } : c), true);
+    saveChallenges((useAppStore.getState().challenges as Challenge[]).map(c => c.id === id ? { ...c, deadState: 'active' as DeadState, deadlineTs: ts, reviewedAt: Date.now(), wasResurrected: true, resurrectedBefore: true } : c), true);
     handleAchievementQueue(['second_chance', 'narrator_noticed']);
   }, [handleAchievementQueue]);
 
-  const saveHabitLinks = useCallback((challengeId: string, ids: string[]) => {
-    const updated = (useAppStore.getState().challenges as Challenge[]).map(c => c.id === challengeId ? { ...c, linkedHabitIds: ids } : c);
+  const saveHabitLinks = useCallback((challengeId: string, links: ChallengeLink[]) => {
+    // The modal already owns the full per-link config (which habits, whether
+    // each auto-advances, and by how much), so we write it straight through.
+    const updated = (useAppStore.getState().challenges as Challenge[]).map(c =>
+      c.id === challengeId ? { ...c, links } : c
+    );
     saveChallenges(updated);
   }, []);
   const handleMarkIncomplete = useCallback((c: Challenge) => {
@@ -2542,6 +3269,23 @@ export default function ChallengesScreen() {
   const activeChallenges = useMemo(() => {
     return challenges.filter(c => c.deadState !== 'buried' && c.deadState !== 'achieved' && c.deadState !== 'trash');
   }, [challenges]);
+
+  // Roster split + ordering, memoized so it recomputes only when the active set
+  // changes — not on every unrelated re-render (progress taps, modal toggles,
+  // theme flips). It was previously recomputed inline on every render.
+  const { rosterSorted, rosterReviewable } = useMemo(() => {
+    const alive = activeChallenges.filter(c => c.deadState !== 'dead' && c.deadState !== 'resurrected');
+    const reviewable = activeChallenges.filter(c => c.deadState === 'dead' || c.deadState === 'resurrected');
+    const edgeScore = (c: Challenge) =>
+      c.current >= c.target ? Number.POSITIVE_INFINITY
+        : (c.deadlineTs ? (c.deadlineTs - Date.now()) / 86400000 : Number.POSITIVE_INFINITY);
+    const sorted = [...alive].sort((a, b) => {
+      const ea = edgeScore(a), eb = edgeScore(b);
+      if (ea !== eb) return ea - eb;
+      return (a.current / a.target) - (b.current / b.target);
+    });
+    return { rosterSorted: sorted, rosterReviewable: reviewable };
+  }, [activeChallenges]);
 
   const buriedChallenges = useMemo(() => challenges.filter(c => c.deadState === 'buried'), [challenges]);
   const trashChallenges = useMemo(() => challenges.filter(c => c.deadState === 'trash'), [challenges]);
@@ -2623,13 +3367,22 @@ export default function ChallengesScreen() {
     if (c) openAddEditSheet(c);
   }, [detailChallengeId, openAddEditSheet]);
 
-  if (!challengesUnlocked) {
-    return (
-      <LockGate
-        onUnlock={() => { setChallengesUnlocked(true); handleAchievementQueue(['cleared']); }}
-        theme={theme}
-      />
-    );
+  // ── Unlock arc gate ──────────────────────────────────────────────────────
+  // Hidden before day 2. On day 2 the tab appears as a teaser — a shimmer + a
+  // literal 24h countdown stamped at first appearance (challengesTeaserSeenAt,
+  // set in app/_layout). After that 24h the four conditions show — their data
+  // has been accruing silently since install, so an active user can land here
+  // already met. Meeting all four + tapping UNLOCK flips challengesUnlocked for
+  // good. "Show me everything" users skip the whole arc via allFeaturesUnlocked.
+  if (!allFeaturesUnlocked && !challengesUnlocked) {
+    if (daysSinceInstall < 2) return <Redirect href={'/(tabs)' as any} />;
+    const revealAt = challengesTeaserSeenAt != null ? challengesTeaserSeenAt + 86_400_000 : null;
+    if (revealAt == null || Date.now() < revealAt) {
+      return <ChallengeTeaser theme={theme} revealAt={revealAt} />;
+    }
+    // The redesigned LockScreen owns the unlock moment (haptic + burst + ring
+    // pulse), then calls this ~1s later — so onUnlock is just the gate flip.
+    return <LockGate onUnlock={() => setChallengesUnlocked(true)} theme={theme} />;
   }
 
   return (
@@ -2685,6 +3438,19 @@ export default function ChallengesScreen() {
           {/* ── ACTIVE LIST ── */}
           <View style={styles.experimentalWrapper}>
             <ScrollView contentContainerStyle={styles.list} showsVerticalScrollIndicator={false}>
+              {(ledgerUnlocked || stakes.length > 0) ? (
+                <TouchableOpacity onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setLedgerOpen(true); }} activeOpacity={0.85}
+                  style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: theme.surface, borderRadius: 14, borderWidth: 1, borderColor: theme.border, paddingVertical: 12, paddingHorizontal: 14, marginBottom: 14 }}>
+                  <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: hexToRgba(theme.textMain, isDarkMode ? 0.08 : 0.06), alignItems: 'center', justifyContent: 'center' }}>
+                    <Feather name="book" size={17} color={theme.textMain} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 14, fontWeight: '800', color: theme.textMain, letterSpacing: -0.2 }}>The Ledger</Text>
+                    <Text style={{ fontSize: 12, fontWeight: '600', color: theme.textSub, marginTop: 1 }}>{stakes.length === 0 ? 'Tap to set a stake' : ledgerUnsettled > 0 ? `${ledgerUnsettled} to settle` : 'All settled'}</Text>
+                  </View>
+                  <Feather name="chevron-right" size={20} color={theme.textSub} />
+                </TouchableOpacity>
+              ) : null}
               {activeChallenges.length === 0 ? (
                 // Empty state — leads the user toward action without
                 // cheerleading. Replaces "Empty Sector." which read as
@@ -2693,8 +3459,8 @@ export default function ChallengesScreen() {
                 // friendlier entry point on a fresh tab.
                 <View style={{ alignItems: 'center', paddingTop: 80, paddingHorizontal: 32 }}>
                   <Feather name="target" size={36} color={theme.textSub} style={{ opacity: 0.18, marginBottom: 20 }} />
-                  <Text style={{ color: theme.textMain, fontSize: 17, fontWeight: '900', textAlign: 'center', letterSpacing: -0.3, marginBottom: 8 }}>Nothing yet.</Text>
-                  <Text style={{ color: theme.textSub, fontSize: 13, fontWeight: '600', textAlign: 'center', lineHeight: 19, marginBottom: 28, opacity: 0.85 }}>A challenge has a target, a deadline, and a record. Kept or buried — you'll see it here.</Text>
+                  <Text style={{ color: theme.textMain, fontSize: 17, fontWeight: '900', textAlign: 'center', letterSpacing: -0.3, marginBottom: 8 }}>No lines drawn.</Text>
+                  <Text style={{ color: theme.textSub, fontSize: 13, fontWeight: '600', textAlign: 'center', lineHeight: 19, marginBottom: 28, opacity: 0.85 }}>A line has a target, a deadline, and a record. You hold it, or you don’t.</Text>
                   {/* Two CTAs — preset is primary because most first-time
                       users don't know what to commit to yet. The blank-form
                       path stays a click away as the secondary action. */}
@@ -2709,64 +3475,36 @@ export default function ChallengesScreen() {
                     onPress={handleOpenAddSheet}
                     hitSlop={{ top: 10, bottom: 10, left: 20, right: 20 }}
                   >
-                    <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '700', letterSpacing: 0.5 }}>or build your own →</Text>
+                    <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '700', letterSpacing: 0.5 }}>or draw your own →</Text>
                   </TouchableOpacity>
                 </View>
               ) : (
                 <>
-                  {/* Two-column grid for live challenges; dead/resurrected
-                      cards (need-review state) keep their full-width
-                      DeadCardOverlay treatment and sit below the grid so
-                      they don't break the tile rhythm. Pair chunking
-                      done inline — the list is small enough that the
-                      cost of the loop per render is negligible. */}
+                  {/* Single-column Line cards for living challenges — the
+                      Roster reads as a short stack of commitments you're
+                      holding, not a dense tile grid. Dead/resurrected ones
+                      (need-review) keep their full-width overlay and sit
+                      below until the death surfaces are reskinned. */}
                   {(() => {
-                    const alive = activeChallenges.filter(c => c.deadState !== 'dead' && c.deadState !== 'resurrected');
-                    const reviewable = activeChallenges.filter(c => c.deadState === 'dead' || c.deadState === 'resurrected');
-                    const pairs: Challenge[][] = [];
-                    for (let i = 0; i < alive.length; i += 2) pairs.push(alive.slice(i, i + 2));
+                    // Split + ordering computed in the rosterSorted / rosterReviewable
+                    // memo above (soonest deadline first; first is the hero, the rest
+                    // hold) — read here so it doesn't recompute on every render.
+                    const sorted = rosterSorted;
+                    const reviewable = rosterReviewable;
+                    const openCb = (c: Challenge) => () => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setDetailChallengeId(c.id); };
+                    const editCb = (c: Challenge) => () => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy); openAddEditSheet(c); };
                     return (
                       <>
-                        {pairs.map((pair, i) => (
-                          <View key={`pair-${i}`} style={{ flexDirection: 'row', gap: 10, marginBottom: 10 }}>
-                            {pair.map(c => (
-                              <View key={c.id} style={{ flex: 1 }}>
-                                <ActivityRingCard
-                                  challenge={c}
-                                  theme={theme}
-                                  calSystem={calSystem}
-                                  onPress={() => {
-                                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                                    setDetailChallengeId(c.id);
-                                  }}
-                                  onLongPress={() => {
-                                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-                                    openAddEditSheet(c);
-                                  }}
-                                  onReview={() => setReviewChallenge(c)}
-                                />
-                              </View>
+                        {sorted.map((c, i) => (
+                          <RosterCard key={`${c.id}-${rosterAnimKey}`} challenge={c} theme={theme} calSystem={calSystem} index={i} hero={i === 0} onBump={() => updateProgress(c.id, 1)} onOpen={openCb(c)} />
+                        ))}
+                        {reviewable.length > 0 ? (
+                          <View style={{ marginTop: sorted.length > 0 ? 24 : 0 }}>
+                            {reviewable.map(c => (
+                              <ActivityRingCard key={c.id} challenge={c} theme={theme} calSystem={calSystem} onPress={openCb(c)} onLongPress={editCb(c)} onReview={() => setReviewChallenge(c)} />
                             ))}
-                            {pair.length === 1 ? <View style={{ flex: 1 }} /> : null}
                           </View>
-                        ))}
-                        {reviewable.map(c => (
-                          <ActivityRingCard
-                            key={c.id}
-                            challenge={c}
-                            theme={theme}
-                            calSystem={calSystem}
-                            onPress={() => {
-                              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                              setDetailChallengeId(c.id);
-                            }}
-                            onLongPress={() => {
-                              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-                              openAddEditSheet(c);
-                            }}
-                            onReview={() => setReviewChallenge(c)}
-                          />
-                        ))}
+                        ) : null}
                       </>
                     );
                   })()}
@@ -2783,8 +3521,8 @@ export default function ChallengesScreen() {
                       style={{ alignSelf: 'center', marginTop: 24, paddingVertical: 8, paddingHorizontal: 16 }}
                       hitSlop={{ top: 10, bottom: 10, left: 20, right: 20 }}
                     >
-                      <Text style={{ fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace', color: theme.textSub, fontSize: 10, fontWeight: '700', opacity: 0.45, letterSpacing: 1.5 }}>
-                        TRASH · {trashChallenges.length}
+                      <Text style={{ color: theme.textSub, fontSize: 11, fontWeight: '700', opacity: 0.5, letterSpacing: 1 }}>
+                        Trash · {trashChallenges.length}
                       </Text>
                     </TouchableOpacity>
                   ) : null}
@@ -3006,6 +3744,11 @@ export default function ChallengesScreen() {
                 />
               </View>
 
+              {/* MILESTONES — gated on the first-challenge unlock. Absent when
+                  locked (i.e. while creating the very first challenge); appears
+                  for every challenge created after one exists. */}
+              {milestonesUnlocked ? (
+              <Reanimated.View entering={FadeIn.duration(300)}>
               <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 1.5, marginBottom: 12 }}>MILESTONES</Text>
               {milestones.map((m, i) => {
                 const mRtl = isRtl(m.text);
@@ -3052,6 +3795,8 @@ export default function ChallengesScreen() {
                 />
                 <TouchableOpacity onPress={addMs} style={{ backgroundColor: theme.textMain, borderRadius: 10, paddingHorizontal: 14, justifyContent: 'center' }}><Feather name="plus" size={16} color={theme.bg} /></TouchableOpacity>
               </View>
+              </Reanimated.View>
+              ) : null}
 
               {/* ── CAPSULE-LOCKED FINISH ──
                   Seal a message for the moment this challenge is achieved. The note
@@ -3060,8 +3805,12 @@ export default function ChallengesScreen() {
                   user shouldn't be reminded that a future-self message is waiting,
                   which is part of the surprise. They can't edit or remove it from
                   here either; the seal is set-once. */}
-              {editingChallenge?.linkedCapsuleNoteId ? null : (
-                <>
+              {/* Capsule-locked finish — gated on CAPSULE_LOCK, which only
+                  unlocks for users who discovered Sealing in Notes first
+                  (day 10+). Absent otherwise. Also hidden once a capsule is
+                  already sealed on this challenge (preserve the surprise). */}
+              {(editingChallenge?.linkedCapsuleNoteId || !capsuleLockUnlocked) ? null : (
+                <Reanimated.View entering={FadeIn.duration(300)}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, marginTop: 8 }}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                       <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 1.5 }}>SEAL A MESSAGE FOR THE FINISH LINE</Text>
@@ -3081,7 +3830,7 @@ export default function ChallengesScreen() {
                       />
                     </View>
                   )}
-                </>
+                </Reanimated.View>
               )}
 
               <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 1.5, marginBottom: 12, marginTop: 8 }}>AESTHETICS</Text>
@@ -3151,6 +3900,12 @@ export default function ChallengesScreen() {
                   replaced the full-screen detail modal. */}
               {editingChallenge ? (
                 <View style={{ flexDirection: 'row', gap: 10, marginTop: 8, marginBottom: 4 }}>
+                  {/* Link Habits gated on LINKED_HABITS (2+ active challenges).
+                      Absent before unlock; the dot sits on it until tapped.
+                      Move to Trash stays regardless and takes the row when
+                      Link Habits is hidden. */}
+                  {linkedHabitsUnlocked ? (
+                  <Reanimated.View entering={FadeIn.duration(300)} style={{ flex: 1 }}>
                   <TouchableOpacity
                     onPress={() => {
                       // Open habit-link modal ON TOP of the edit sheet
@@ -3158,14 +3913,20 @@ export default function ChallengesScreen() {
                       // above the gorhom bottom sheet, so the user can
                       // close the link modal and land back in the same
                       // edit context with their form state intact.
+                      markDotSeen(FEATURE_IDS.LINKED_HABITS);
                       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                       setHabitLinkChallenge(editingChallenge);
                     }}
-                    style={{ flex: 1, paddingVertical: 13, borderRadius: 12, borderWidth: 1, borderColor: theme.border, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 8 }}
+                    style={{ paddingVertical: 13, borderRadius: 12, borderWidth: 1, borderColor: linkedHabitsIsNew ? '#3B82F6' : theme.border, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 8 }}
                   >
                     <Feather name="link-2" size={14} color={theme.textSub} />
                     <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '700' }}>Link Habits</Text>
+                    {linkedHabitsIsNew ? (
+                      <View style={{ width: 7, height: 7, borderRadius: 3.5, backgroundColor: '#3B82F6' }} />
+                    ) : null}
                   </TouchableOpacity>
+                  </Reanimated.View>
+                  ) : null}
                   <TouchableOpacity
                     onPress={() => {
                       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
@@ -3200,11 +3961,16 @@ export default function ChallengesScreen() {
             <View style={{ paddingHorizontal: 24, paddingTop: 10, paddingBottom: 8, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
               <View>
                 <Text style={{ fontSize: 28, fontWeight: '900', color: theme.textMain, letterSpacing: -1 }}>Trash.</Text>
-                <Text style={{ fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace', color: theme.textSub, fontSize: 10, fontWeight: '700', letterSpacing: 0.5, marginTop: 4, opacity: 0.8 }}>
+                <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '700', letterSpacing: 0.5, marginTop: 4, opacity: 0.8 }}>
                   AUTO-PURGE AFTER 30 DAYS
                 </Text>
               </View>
-              <TouchableOpacity onPress={() => vaultSheetRef.current?.dismiss()} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}><Feather name="x" size={24} color={theme.textMain} /></TouchableOpacity>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 18 }}>
+                {trashChallenges.length > 0 && (
+                  <TouchableOpacity onPress={() => { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning); setPurgeAllVisible(true); }} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}><Text style={{ color: L1_COLOR, fontWeight: '800', fontSize: 14 }}>Purge all</Text></TouchableOpacity>
+                )}
+                <TouchableOpacity onPress={() => vaultSheetRef.current?.dismiss()} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}><Feather name="x" size={24} color={theme.textMain} /></TouchableOpacity>
+              </View>
             </View>
             <BottomSheetScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 18, paddingBottom: 40 }} showsVerticalScrollIndicator={false}>
               {trashChallenges.length === 0 ? (
@@ -3250,6 +4016,7 @@ export default function ChallengesScreen() {
             theme={theme}
             onClose={() => setGraveyardOpen(false)}
             onTap={(c) => { setGraveyardOpen(false); setReviewChallenge(c); }}
+            onDelete={(c) => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy); saveChallenges((useAppStore.getState().challenges as Challenge[]).filter(x => x.id !== c.id), true); }}
           />
 
           {/* Detail view — read from current store state via id, not a
@@ -3279,6 +4046,7 @@ export default function ChallengesScreen() {
 
           <HabitLinkModal visible={!!habitLinkChallenge} challenge={habitLinkChallenge} habits={allHabits} theme={theme} insets={insets} onSave={saveHabitLinks} onClose={() => setHabitLinkChallenge(null)} />
           <ReviewModal visible={!!reviewChallenge} challenge={reviewChallenge} theme={theme} insets={insets} calSystem={calSystem} onResurrect={handleResurrect} onBury={(id) => requestBury(id)} onClose={() => setReviewChallenge(null)} />
+          <LedgerModal visible={ledgerOpen} theme={theme} insets={insets} onClose={() => setLedgerOpen(false)} />
           <AchievedModal visible={achievedVisible} challenges={challenges} theme={theme} insets={insets} onClose={() => setAchievedVisible(false)} onMarkIncomplete={(c) => { handleMarkIncomplete(c); setAchievedVisible(false); }} onMoveToTrash={(c) => { requestTrash(c); setAchievedVisible(false); }} />
           <AchievementsScreen visible={achievementsVisible} achievements={achievements} theme={theme} onClose={() => setAchievementsVisible(false)} onTrigger={(id, ft) => { const narr = ACHIEVEMENT_NARRATION[id]; setCurrentNarrator({ lines: narr.lines, dismissLabel: narr.dismiss, achievementId: id, tone: narr.tone, firstTime: ft }); }} />
 
@@ -3286,6 +4054,7 @@ export default function ChallengesScreen() {
           {currentNarrator && <Modal visible animationType="fade" transparent={false}><NarratorCeremony moment={currentNarrator} theme={theme} onDone={() => setCurrentNarrator(null)} /></Modal>}
           <SoftDeleteOverlay visible={softDeleteMode === 'trash'} title={softDeleteTarget?.title || ''} subtitle="You're sure?" confirmLabel="GONE." cancelLabel="Not yet." onConfirm={confirmTrash} onCancel={() => { setSoftDeleteTarget(null); setSoftDeleteMode(null); }} theme={theme} />
           <SoftDeleteOverlay visible={softDeleteMode === 'forever'} title={softDeleteTarget?.title || ''} subtitle={"This cannot be undone.\nThis challenge will not be remembered."} confirmLabel="ERASE IT." cancelLabel="KEEP IT." onConfirm={confirmDeleteForever} onCancel={() => { setSoftDeleteTarget(null); setSoftDeleteMode(null); }} theme={theme} />
+          <SoftDeleteOverlay visible={purgeAllVisible} title="Purge all trash" subtitle={"Every challenge in the trash will be erased.\nThis cannot be undone."} confirmLabel="PURGE ALL." cancelLabel="KEEP THEM." onConfirm={confirmPurgeAll} onCancel={() => setPurgeAllVisible(false)} theme={theme} />
 
           {/* The "preset slot occupied" status now lives passively in
               the active list (top dashed row), so this overlay was
@@ -3297,10 +4066,10 @@ export default function ChallengesScreen() {
               to dismiss. */}
           {customLogChallenge ? (
             <Modal visible transparent animationType="fade" onRequestClose={() => setCustomLogChallenge(null)}>
-              <View style={{ flex: 1, backgroundColor: theme.bg === '#000000' ? 'rgba(0,0,0,0.93)' : 'rgba(255,255,255,0.93)', justifyContent: 'center', alignItems: 'center', padding: 36 }}>
+              <View style={{ flex: 1, backgroundColor: theme.isDark ? 'rgba(0,0,0,0.93)' : 'rgba(255,255,255,0.93)', justifyContent: 'center', alignItems: 'center', padding: 36 }}>
                 <TouchableOpacity activeOpacity={1} style={StyleSheet.absoluteFill} onPress={() => setCustomLogChallenge(null)} />
                 <View style={{ width: '100%', alignItems: 'center' }}>
-                  <Text style={{ fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace', fontSize: 10, color: theme.textSub, letterSpacing: 2, marginBottom: 18 }}>LOG CUSTOM AMOUNT</Text>
+                  <Text style={{ fontSize: 10, color: theme.textSub, letterSpacing: 2, marginBottom: 18 }}>LOG CUSTOM AMOUNT</Text>
                   <Text
                     style={{
                       fontSize: 20, fontWeight: '900', color: theme.textMain,
@@ -3310,7 +4079,7 @@ export default function ChallengesScreen() {
                   >
                     {customLogChallenge.title}
                   </Text>
-                  <Text style={{ fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace', fontSize: 11, color: theme.textSub, marginBottom: 28, textAlign: 'center' }}>
+                  <Text style={{ fontSize: 11, color: theme.textSub, marginBottom: 28, textAlign: 'center' }}>
                     {customLogChallenge.current} / {customLogChallenge.target} {customLogChallenge.unit}
                   </Text>
                   <TextInput
@@ -3328,7 +4097,7 @@ export default function ChallengesScreen() {
                         const n = parseInt(customLogValue);
                         if (!n) return;
                         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                        updateProgress(customLogChallenge.id, -n);
+                        updateProgress(customLogChallenge.id, -n, 'bulk');
                         setCustomLogChallenge(null);
                         setCustomLogValue('');
                       }}
@@ -3342,7 +4111,7 @@ export default function ChallengesScreen() {
                         const n = parseInt(customLogValue);
                         if (!n) return;
                         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                        updateProgress(customLogChallenge.id, n);
+                        updateProgress(customLogChallenge.id, n, 'bulk');
                         setCustomLogChallenge(null);
                         setCustomLogValue('');
                       }}

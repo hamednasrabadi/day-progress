@@ -50,3 +50,8 @@ app-example
 # generated native folders
 /ios
 /android
+
+# Local-only — personal planning notes + code backups, not for the repo
+backup_code/
+action_plan.md
+research.md

@@ -13,13 +13,26 @@
  *   - Any AsyncStorage migration  →  timeline.tsx (runs once on first focus)
  */
 
-import { useEffect, useState } from 'react';
-import { Modal, View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import { AppState, AppStateStatus, Modal, View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { Stack } from 'expo-router';
+import { ThemeProvider, DarkTheme, DefaultTheme } from '@react-navigation/native';
 import * as Notifications from 'expo-notifications';
+import * as SystemUI from 'expo-system-ui';
 import notifee, { EventType } from '@notifee/react-native';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { ensureAppChannels } from '../lib/notifChannels';
+import { useAppStore } from '../store/useAppStore';
+import { Whisper } from '../components/Whisper';
+import { GrowthIntro } from '../components/GrowthIntro';
+import { getTheme } from '../lib/timelineTheme';
+import { todayStr, EMPTY_APP_STATE_FOR_UNLOCKS, useDaysSinceInstall, useIsUnlocked, FEATURE_IDS } from '../lib/unlocks';
+import { useUnlockTriggers } from '../lib/unlockTriggers';
+
+// Tab bar height duplicated from app/(tabs)/_layout.tsx so the global Whisper
+// bar can park immediately above it. Keep in sync with that file's
+// tabBarStyle.height.
+const TAB_BAR_HEIGHT = 110;
 
 // ── Notification foreground behaviour ──────────────────────────────────────
 // Registered once at the module level so it applies for the lifetime of the app.
@@ -47,6 +60,148 @@ notifee.onBackgroundEvent(async ({ type, detail }) => {
 
 export default function RootLayout() {
   const [activeAlarm, setActiveAlarm] = useState<any>(null);
+
+  // ── First-launch growth intro ───────────────────────────────────────────
+  // Gated on hydration so a returning user (introSeen restored from backup)
+  // never sees a flash of the intro before persisted state loads. On a true
+  // fresh install introSeen is false from the start, so it shows immediately.
+  const [hydrated, setHydrated] = useState<boolean>(() => useAppStore.persist?.hasHydrated?.() ?? false);
+  useEffect(() => {
+    if (useAppStore.persist?.hasHydrated?.()) { setHydrated(true); return; }
+    const unsub = useAppStore.persist?.onFinishHydration?.(() => setHydrated(true));
+    return () => { unsub?.(); };
+  }, []);
+  const introSeen = useAppStore(s => s.introSeen);
+  const setIntroSeen = useAppStore(s => s.setIntroSeen);
+  const unlockAllFeatures = useAppStore(s => s.unlockAll);
+  const themeMode = useAppStore(s => s.themeMode);
+  const theme = getTheme(themeMode);
+  // expo-router sets no navigation theme, so React Navigation and the native
+  // react-native-screens containers fall back to the light DefaultTheme — its
+  // white `background` is what flashes through during the native screen
+  // attach/detach on every tab switch. Hand the navigators a theme whose
+  // background/card match the app's own bg per mode, so there's no light layer
+  // left to show through.
+  const navTheme = useMemo(() => {
+    const base = theme.isDark ? DarkTheme : DefaultTheme;
+    return { ...base, colors: { ...base.colors, background: theme.bg, card: theme.bg } };
+  }, [theme.isDark, theme.bg]);
+  // navTheme above only recolors React Navigation's JS-level views. The NATIVE
+  // root view sitting beneath the whole navigator keeps its default white, and
+  // that's the sliver that still flashes through during the native screen
+  // attach/detach on a tab switch (most visible now that freezeOnBlur detaches
+  // off-screen tabs). Paint that native layer to match the active theme bg —
+  // keyed on theme.bg so it tracks light/dark/blue switches.
+  useEffect(() => {
+    SystemUI.setBackgroundColorAsync(theme.bg);
+  }, [theme.bg]);
+  const showIntro = hydrated && !introSeen;
+
+  // ── Progressive-unlock plumbing ─────────────────────────────────────────
+  // installDate stamps once (first launch ever, action is idempotent so
+  // subsequent calls are no-ops). lastKnownDate advances on every foreground
+  // event but only forward — the store's setLastKnownDate clamps against
+  // backward clock manipulation. Both run on mount + each AppState.active
+  // transition so the day counter stays honest across launches and
+  // foreground-from-background cycles within the same calendar day.
+  useEffect(() => {
+    const stamp = () => {
+      const today = todayStr();
+      const s = useAppStore.getState();
+      s.setInstallDate(today);
+      s.setLastKnownDate(today);
+    };
+    stamp();
+    const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
+      if (state === 'active') stamp();
+    });
+    return () => sub.remove();
+  }, []);
+
+  // ── One-time birthday-notification purge ────────────────────────────────
+  // The Birthdays feature was cut in the calm-pivot, but any yearly birthday
+  // notifications a prior build scheduled are still live in the OS and would
+  // fire forever. Cancel them by their `birthday-` identifier prefix — target-
+  // safe, so habit / challenge / seal notifications are untouched. Gated by a
+  // persisted flag so it runs once.
+  useEffect(() => {
+    if (useAppStore.getState().birthdayNotifsPurged) return;
+    (async () => {
+      try {
+        const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+        await Promise.all(
+          scheduled
+            .filter(n => typeof n.identifier === 'string' && n.identifier.startsWith('birthday-'))
+            .map(n => Notifications.cancelScheduledNotificationAsync(n.identifier))
+        );
+      } catch {
+        // Best-effort: if the query fails we leave the flag unset and retry next launch.
+        return;
+      }
+      useAppStore.getState().markBirthdayNotifsPurged();
+    })();
+  }, []);
+
+  // Trigger evaluator snapshot. Counters come from per-tab stores via narrow
+  // selectors that return primitives — Zustand's shallow comparison means
+  // root-layout re-renders only fire when a counter actually moves, not on
+  // every unrelated store edit. As more tabs land their triggers, add their
+  // counters here.
+  const daysSinceInstall = useDaysSinceInstall();
+  const totalTasksCreated = useAppStore(s => s.totalTasksCreated ?? 0);
+  // Active = not completed and not archived (per the Tasks prompt's spec).
+  // Intentionally broader than the in-tab `baseActiveTasks` which also drops
+  // trash/resting — the gating is about "things demanding attention," not
+  // the precise feed filter.
+  const activeTaskCount = useAppStore(
+    s => s.tasks.filter(t => !t.completed && t.status !== 'archived').length
+  );
+  // Timeline counters — primitives, so root only re-renders on actual change.
+  const totalBlocksCreated = useAppStore(s => s.totalBlocksCreated ?? 0);
+  const dayRatingsCount = useAppStore(s => s.dayRatingsCount ?? 0);
+  const activeDaysWithBlock = useAppStore(s => s.activeDaysWithBlock ?? 0);
+  // Notes counters + the derived sealingUnlocked flag (NOT a stored field —
+  // derived from the SEALING unlock so it can't drift). CAPSULE_LOCK in the
+  // Challenges tab reads sealingUnlocked from this snapshot.
+  const totalNotesCreated = useAppStore(s => s.totalNotesCreated ?? 0);
+  const diaryEntriesCreated = useAppStore(s => s.diaryEntriesCreated ?? 0);
+  const sealingUnlocked = useIsUnlocked(FEATURE_IDS.SEALING);
+  // Challenges + Habits counters. activeChallengesCount derived (active or
+  // resurrected, not dead/buried/achieved/trash) — a primitive so root only
+  // re-renders when the count moves.
+  const totalChallengesCreated = useAppStore(s => s.totalChallengesCreated ?? 0);
+  const activeChallengesCount = useAppStore(
+    s => s.challenges.filter(c => c.deadState === 'active' || c.deadState === 'resurrected').length
+  );
+  const totalHabitsCreated = useAppStore(s => s.totalHabitsCreated ?? 0);
+  const maxSingleHabitCompletions = useAppStore(s => s.maxSingleHabitCompletions ?? 0);
+  const dayConqueredEver = useAppStore(s => s.dayConqueredEver ?? false);
+  const unlockSnapshot = useMemo(() => ({
+    ...EMPTY_APP_STATE_FOR_UNLOCKS,
+    daysSinceInstall,
+    totalTasksCreated,
+    activeTaskCount,
+    totalBlocksCreated,
+    dayRatingsCount,
+    activeDaysWithBlock,
+    totalNotesCreated,
+    diaryEntriesCreated,
+    sealingUnlocked,
+    totalChallengesCreated,
+    activeChallengesCount,
+    totalHabitsCreated,
+    maxSingleHabitCompletions,
+    dayConqueredEver,
+  }), [daysSinceInstall, totalTasksCreated, activeTaskCount, totalBlocksCreated, dayRatingsCount, activeDaysWithBlock, totalNotesCreated, diaryEntriesCreated, sealingUnlocked, totalChallengesCreated, activeChallengesCount, totalHabitsCreated, maxSingleHabitCompletions, dayConqueredEver]);
+  useUnlockTriggers(unlockSnapshot);
+
+  // Stamp the moment the Challenges tab first appears (day 2) so its teaser can
+  // run a literal 24h countdown from that instant to the day-3 conditions reveal.
+  useEffect(() => {
+    if (daysSinceInstall >= 2 && !useAppStore.getState().challengesTeaserSeenAt) {
+      useAppStore.getState().setChallengesTeaserSeenAt(Date.now());
+    }
+  }, [daysSinceInstall]);
 
   useEffect(() => {
     // Create Android channels for habits / tasks / time-capsule reminders. All
@@ -84,8 +239,28 @@ export default function RootLayout() {
 
   return (
     <KeyboardProvider>
-      {/* Normal app renders underneath */}
-      <Stack screenOptions={{ headerShown: false }} />
+      {/* Normal app renders underneath. ThemeProvider hands React Navigation
+          and the native react-native-screens containers a dark `background`
+          (per mode) so no white DefaultTheme layer flashes through on switches. */}
+      <ThemeProvider value={navTheme}>
+        <Stack screenOptions={{ headerShown: false }} />
+      </ThemeProvider>
+
+      {/* Global whisper bar — sits above the tab bar on every screen. The
+          component renders nothing when the queue is empty or the keyboard
+          is open, so a permanently-mounted instance here is cheap. Sits
+          BELOW the alarm modal because the modal uses a separate RN portal
+          layer (zIndex doesn't compete across portals). */}
+      <Whisper bottomOffset={TAB_BAR_HEIGHT} />
+
+      {/* First-launch growth intro — sets the "this app reveals itself" frame
+          and offers the power-user "show me everything" fork. One-shot. */}
+      <GrowthIntro
+        visible={showIntro}
+        theme={theme}
+        onBegin={() => setIntroSeen(true)}
+        onShowEverything={() => { unlockAllFeatures(); setIntroSeen(true); }}
+      />
 
       {/* Full-screen alarm overlay — rendered above the entire navigator */}
       <Modal visible={!!activeAlarm} animationType="slide" transparent={false}>

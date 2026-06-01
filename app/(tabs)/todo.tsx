@@ -13,12 +13,13 @@ import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
 import { KeyboardStickyView, KeyboardAvoidingView, useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller';
 import * as Notifications from 'expo-notifications';
 import { TASK_CHANNEL_ID } from '../../lib/notifChannels';
-import Animated, { FadeInDown, FadeOut, FadeIn, LinearTransition, Easing, useSharedValue, useAnimatedStyle, withTiming } from 'react-native-reanimated';
+import Animated, { FadeInDown, FadeOut, FadeIn, LinearTransition, Easing, useAnimatedStyle } from 'react-native-reanimated';
 import { BlurView } from 'expo-blur';
 
 import { FlashList } from '@shopify/flash-list';
 import { BottomSheetModal, BottomSheetModalProvider, BottomSheetBackdrop, BottomSheetScrollView, BottomSheetTextInput } from '@gorhom/bottom-sheet';
-import { useAppStore, Task, Project, SubTask, Priority, CalendarSystem, RecurType, UrgencyLevel, TaskStatus, ProjectStatus, DeepWorkIntent, DeepWorkSession, Challenge, Habit, DayRating } from '../../store/useAppStore';
+import { useAppStore, Task, Project, SubTask, Priority, CalendarSystem, RecurType, UrgencyLevel, TaskStatus, ProjectStatus, DeepWorkIntent, DeepWorkSession, Challenge, Habit, DayRating, makeLedgerEntry } from '../../store/useAppStore';
+import { FEATURE_IDS, useIsUnlocked, useIsNew, isUnlocked } from '../../lib/unlocks';
 
 LogBox.ignoreLogs(['setLayoutAnimationEnabledExperimental', 'SafeAreaView has been deprecated']);
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -167,10 +168,15 @@ const sortTasks = (taskList: Task[]) => {
 
 // ─── THEME ───
 type Theme = { bg: string; surface: string; border: string; textMain: string; textSub: string; danger: string; warning: string; success: string; accent: string; };
-function getTheme(dark: boolean): Theme {
-  return dark
-    ? { bg:'#000000', surface:'#0A0A0A', border:'#1A1A1A', textMain:'#FFFFFF', textSub:'#555555', danger:'#F43F5E', warning:'#F59E0B', success:'#10B981', accent:'#3B82F6' }
-    : { bg:'#F8F9FA', surface:'#FFFFFF', border:'#E5E5EA', textMain:'#111111', textSub:'#888888', danger:'#F43F5E', warning:'#F59E0B', success:'#10B981', accent:'#3B82F6' };
+function getTheme(mode: 'light' | 'dark' | 'blue'): Theme {
+  switch (mode) {
+    case 'blue':
+      return { bg:'#0B1A2B', surface:'#122A40', border:'#1E3A52', textMain:'#E8F0F8', textSub:'#7FA0BC', danger:'#F43F5E', warning:'#F59E0B', success:'#10B981', accent:'#82AAFF' };
+    case 'dark':
+      return { bg:'#121214', surface:'#1C1C20', border:'#2C2C30', textMain:'#F4F4F5', textSub:'#8A8A92', danger:'#F43F5E', warning:'#F59E0B', success:'#10B981', accent:'#3B82F6' };
+    default:
+      return { bg:'#F8F9FA', surface:'#FFFFFF', border:'#E5E5EA', textMain:'#111111', textSub:'#888888', danger:'#F43F5E', warning:'#F59E0B', success:'#10B981', accent:'#3B82F6' };
+  }
 }
 function hexToRgba(hex: string, a: number) {
   const h = hex.replace('#',''); const r=parseInt(h.slice(0,2),16),g=parseInt(h.slice(2,4),16),b=parseInt(h.slice(4,6),16); return `rgba(${r},${g},${b},${a})`;
@@ -243,6 +249,7 @@ const CalendarPicker = ({ value, onChange, theme, calSystem, minDate }: { value:
 };
 
 // ─── SWIPE ACTION RENDERERS (stable, defined outside component) ───
+// eslint-disable-next-line react/display-name -- Swipeable render callback, not a component
 const makeTaskRightActions = (theme: Theme) => (p: any, d: any) => {
   const scale = d.interpolate({ inputRange: [-100, 0], outputRange: [1, 0.5], extrapolate: 'clamp' });
   return (
@@ -251,6 +258,7 @@ const makeTaskRightActions = (theme: Theme) => (p: any, d: any) => {
     </View>
   );
 };
+// eslint-disable-next-line react/display-name -- Swipeable render callback, not a component
 const makeTaskLeftActions = (theme: Theme) => (p: any, d: any) => {
   const scale = d.interpolate({ inputRange: [0, 100], outputRange: [0.5, 1], extrapolate: 'clamp' });
   return (
@@ -262,10 +270,10 @@ const makeTaskLeftActions = (theme: Theme) => (p: any, d: any) => {
 
 // ─── MEMOIZED TASK CARD ───
 // urgency is pre-computed in feedData — zero date math at render time
-const TaskCard = React.memo(({
+const TaskCard = React.memo(function TaskCard({
   task, urgency, isExp, isSeed, delayIdx, isFirstInFolder, indentInFolder, theme, calSystem, activeProjects,
-  onCheck, onSubCheck, onTrash, onArchive, onEdit, onExpand, onReclaim
-}: any) => {
+  onCheck, onSubCheck, onTrash, onArchive, onEdit, onExpand, onReclaim, onRest
+}: any) {
   const isUrgent = urgency === 'overdue' || urgency === 'critical' || urgency === 'high';
 
   // Stable swipe renderers — memoized per theme, Swipeable never gets a new ref
@@ -443,9 +451,18 @@ const TaskCard = React.memo(({
                 </View>
               ) : null}
 
+              {/* Action row. Overdue tasks swap Archive → Rest because that's
+                  the actually-useful move when a deadline has passed: snooze
+                  it forward and bring it back when the user can engage. Edit
+                  (lets them change the deadline) and Trash (lets it go) stay
+                  on both variants. */}
               <View style={{ flexDirection: 'row', gap: 8, marginTop: 16 }}>
                 <TouchableOpacity onPress={() => onEdit(task)} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 10, borderWidth: 1, borderColor: theme.border, backgroundColor: theme.bg }}><Feather name="edit-3" size={14} color={theme.textSub} /><Text style={{ fontSize: 12, fontWeight: '800', color: theme.textSub }}>Edit</Text></TouchableOpacity>
-                <TouchableOpacity onPress={() => onArchive(task)} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 10, borderWidth: 1, borderColor: theme.border, backgroundColor: theme.bg }}><Feather name="archive" size={14} color={theme.textSub} /><Text style={{ fontSize: 12, fontWeight: '800', color: theme.textSub }}>Archive</Text></TouchableOpacity>
+                {isDead && onRest ? (
+                  <TouchableOpacity onPress={() => onRest(task)} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 10, borderWidth: 1, borderColor: theme.border, backgroundColor: theme.bg }}><Feather name="moon" size={14} color={theme.textSub} /><Text style={{ fontSize: 12, fontWeight: '800', color: theme.textSub }}>Rest</Text></TouchableOpacity>
+                ) : (
+                  <TouchableOpacity onPress={() => onArchive(task)} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 10, borderWidth: 1, borderColor: theme.border, backgroundColor: theme.bg }}><Feather name="archive" size={14} color={theme.textSub} /><Text style={{ fontSize: 12, fontWeight: '800', color: theme.textSub }}>Archive</Text></TouchableOpacity>
+                )}
                 <TouchableOpacity onPress={() => onTrash(task)} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 10, borderWidth: 1, borderColor: hexToRgba(theme.danger, 0.2), backgroundColor: theme.bg }}><Feather name="trash-2" size={14} color={theme.danger} /><Text style={{ fontSize: 12, fontWeight: '800', color: theme.danger }}>Trash</Text></TouchableOpacity>
               </View>
             </View>
@@ -495,6 +512,23 @@ export default function TodoScreen() {
   const addDeepWorkSession = useAppStore(s => s.addDeepWorkSession);
   const deleteDeepWorkSession = useAppStore(s => s.deleteDeepWorkSession);
   const toggleHabitAction = useAppStore(s => s.toggleHabitAction);
+  // Progressive feature unlocks — one reactive hook per gated feature. All
+  // gating logic in this file routes through these booleans; the FEATURE_IDS
+  // constants from lib/unlocks.ts are the single source of truth for keys.
+  // isUnlocked drives "render or not"; isNew drives the new-dot indicator
+  // AND the FadeIn entrance animation (each plays until the user touches the
+  // section, at which point markDotSeen clears both).
+  const subtasksUnlocked = useIsUnlocked(FEATURE_IDS.SUBTASKS);
+  const subtasksIsNew = useIsNew(FEATURE_IDS.SUBTASKS);
+  const promiseUnlocked = useIsUnlocked(FEATURE_IDS.PROMISE);
+  const promiseIsNew = useIsNew(FEATURE_IDS.PROMISE);
+  const deepWorkUnlocked = useIsUnlocked(FEATURE_IDS.DEEP_WORK);
+  const recurringUnlocked = useIsUnlocked(FEATURE_IDS.RECURRING);
+  const recurringIsNew = useIsNew(FEATURE_IDS.RECURRING);
+  const projectsUnlocked = useIsUnlocked(FEATURE_IDS.PROJECTS);
+  const projectsIsNew = useIsNew(FEATURE_IDS.PROJECTS);
+  const adhdModeUnlocked = useIsUnlocked(FEATURE_IDS.ADHD_MODE);
+  const markDotSeen = useAppStore(s => s.markDotSeen);
   // Promise stats — separate selector so the inbox banner doesn't re-render
   // when unrelated slices of state change.
   const promiseStats = useAppStore(s => s.promiseStats);
@@ -502,10 +536,17 @@ export default function TodoScreen() {
   const recordPromiseKept = useAppStore(s => s.recordPromiseKept);
   const recordPromiseBroken = useAppStore(s => s.recordPromiseBroken);
   const syncPromiseMonth = useAppStore(s => s.syncPromiseMonth);
-  const theme = useMemo(() => getTheme(isDarkMode), [isDarkMode]);
+  const themeMode = useAppStore(s => s.themeMode);
+  const theme = useMemo(() => getTheme(themeMode), [themeMode]);
 
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [expandedProjectId, setExpandedProjectId] = useState<string | null>(null);
+  // Once we've auto-expanded the most-urgent project on tab focus (smart
+  // auto-expand), the ref blocks re-firing. Whether the user collapsed it,
+  // expanded a different one, or left the auto-expand alone — all three count
+  // as "they've seen the tab now," so we don't override their state on
+  // subsequent focuses. Resets on app restart (refs are session-scoped).
+  const autoExpandedRef = useRef(false);
   const [quickTaskText, setQuickTaskText] = useState('');
   const [scheduledOpen, setScheduledOpen] = useState(false);
   // Keyboard handling is now owned by react-native-keyboard-controller — KeyboardStickyView for the quick-add bar,
@@ -559,6 +600,26 @@ export default function TodoScreen() {
     paddingBottom: (Math.max(insets.bottom, 16) + 16) * (1 - kbAnim.progress.value),
   }));
 
+  // ── Pull-to-reveal tools: Deep Work + ADHD tiles ──────────────────────────
+  // Tiles live as the FlashList's ListHeaderComponent. On every tab focus we
+  // scroll the list past them (to NAV_HEIGHT - PEEK) so the user lands on
+  // tasks, not tools — the tab reads as "tasks first." Pulling/scrolling up
+  // reveals the tiles via the platform's own scroll mechanics: GPU-driven,
+  // never touches layout, frame-perfect on both iOS and Android. PEEK leaves
+  // a thin strip of the tile bottoms visible as a discovery hint so first
+  // time users know the row exists.
+  //
+  // Previous version drove the tile container's `height` via a Reanimated
+  // shared value off a Pan gesture. That works fine above a plain ScrollView
+  // (which is what Timeline uses), but a height-changing parent forces a
+  // virtualized FlashList to re-measure its viewport on every animation
+  // frame — devastating jank with a long task list. This rebuild drops the
+  // entire worklet apparatus and leans on native scroll, which is what
+  // every well-behaved mail/list app does.
+  const NAV_HEIGHT = 74; // marginTop 8 + tile row ~52 + marginBottom 14
+  const PEEK = 14;
+  const listRef = useRef<any>(null);
+
   // Modal States
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const [forcedProjectId, setForcedProjectId] = useState<string | null>(null);
@@ -571,6 +632,26 @@ export default function TodoScreen() {
   // see what's inside before deciding to restore or delete the project.
   const [expandedArchivedProjectId, setExpandedArchivedProjectId] = useState<string | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{ visible: boolean, title: string, message: string, destructiveLabel: string, onConfirm: () => void } | null>(null);
+
+  // ── Pull-from-inbox picker ── shown from the empty-today CTA. Single-tap
+  // promotes an inbox task to today (stamps startDate = today). Multi-select
+  // would invite the user to over-commit; the single-tap-and-close shape
+  // matches the "what's the ONE thing today is for" framing.
+  const [pickFromInboxVisible, setPickFromInboxVisible] = useState(false);
+
+  // ── Rest picker ── shown when the user taps "Rest" on an overdue task.
+  // Holds the target task so the modal can show "rest WHICH task" + apply
+  // the wake date to the correct id. Closed by selecting an option or by
+  // tapping the backdrop.
+  const [restTarget, setRestTarget] = useState<Task | null>(null);
+
+  // ── Delete-project modal ── replaces a plain confirm dialog because we
+  // surface an opt-in toggle: by default the project's tasks move back to
+  // Inbox (safer, the user usually wants them somewhere), with a toggle to
+  // bulk-trash them alongside the project. Default off so a casual tap on
+  // "Delete project" doesn't nuke a folder of work.
+  const [deleteProjectId, setDeleteProjectId] = useState<string | null>(null);
+  const [deleteProjectAlsoTasks, setDeleteProjectAlsoTasks] = useState(false);
 
   // ── Deep Work state ──
   const [dwPickerVisible, setDwPickerVisible] = useState(false);
@@ -587,6 +668,12 @@ export default function TodoScreen() {
   const [dwNow, setDwNow] = useState<number>(Date.now());
   const [dwReflectionRating, setDwReflectionRating] = useState<DayRating | null>(null);
   const [dwReflectionText, setDwReflectionText] = useState<string>('');
+  // Mark-done toggle on the reflection sheet — only meaningful when the session
+  // was tied to a task / habit / challenge. Holds the user's choice until they
+  // tap Save, at which point saveDeepWorkReflection applies the appropriate
+  // action (complete task, log habit, +1 challenge). Reset alongside the other
+  // reflection state so re-entering the sheet never carries over a stale opt-in.
+  const [dwMarkDone, setDwMarkDone] = useState<boolean>(false);
   const [dwCelebrating, setDwCelebrating] = useState(false);
   const [dwHistoryVisible, setDwHistoryVisible] = useState(false);
   const [dwHistoryExpanded, setDwHistoryExpanded] = useState<string | null>(null);
@@ -688,6 +775,12 @@ export default function TodoScreen() {
     }
   }, [setTasks, recordPromiseBroken]);
 
+  // Per-focus side-effects. Stable deps so this only fires on actual focus
+  // events — not on every expand/collapse interaction, which would otherwise
+  // yank the user's scroll position back to the header. Wake resting tasks,
+  // sweep broken promises, ensure notification permission, and land past the
+  // tile-row header. requestAnimationFrame defers one frame past initial
+  // render so the FlashList has its content sized before we scroll.
   useFocusEffect(useCallback(() => {
     wakePhoenixTasks();
     sweepBrokenPromises();
@@ -696,7 +789,55 @@ export default function TodoScreen() {
       if (status !== 'granted') await Notifications.requestPermissionsAsync();
     };
     checkPermissions();
+    requestAnimationFrame(() => {
+      // The ListHeaderComponent now holds ONLY the Deep Work tile (ADHD Mode
+      // moved to the tab header as a view-switcher). So the header exists iff
+      // Deep Work is unlocked — when it's locked the list has no header to
+      // scroll past and we land at offset 0 with the first task visible.
+      // isUnlocked() also honours the returning-user allFeaturesUnlocked
+      // override, which a raw unlockedFeatures lookup would miss.
+      const hasHeader = isUnlocked(FEATURE_IDS.DEEP_WORK);
+      const offset = hasHeader ? NAV_HEIGHT - PEEK : 0;
+      listRef.current?.scrollToOffset({ offset, animated: false });
+    });
   }, [wakePhoenixTasks, sweepBrokenPromises]));
+
+  // Smart auto-expand — separated from the per-focus effect above so its
+  // dependency on expandedProjectId doesn't cause the scrollToOffset there to
+  // re-fire every time the user expands or collapses a project. Ref-guarded
+  // so it never repeats once it's fired once this session; respects every
+  // form of user override (manual collapse, opening a different project).
+  useFocusEffect(useCallback(() => {
+    if (autoExpandedRef.current) return;
+    if (expandedProjectId !== null) return;
+    const state = useAppStore.getState();
+    const archivedIds = new Set(state.projects.filter(p => p.status === 'archived').map(p => p.id));
+    const candidates = state.tasks.filter(x =>
+      x.status !== 'trash' && x.status !== 'archived' && x.status !== 'resting' &&
+      !x.completed && x.projectId && !archivedIds.has(x.projectId)
+    );
+    const rank = (u: UrgencyLevel) => u === 'overdue' ? 5 : u === 'critical' ? 4 : u === 'high' ? 3 : 0;
+    let bestProj: string | undefined;
+    let bestRank = 0;
+    for (const t of candidates) {
+      const r = rank(getUrgency(t));
+      if (r >= 3 && r > bestRank) {
+        bestProj = t.projectId;
+        bestRank = r;
+      }
+    }
+    if (bestProj) {
+      setExpandedProjectId(bestProj);
+      autoExpandedRef.current = true;
+    }
+  }, [expandedProjectId]));
+
+  // The Tasks-tab unlock check used to live here as a local migration +
+  // runtime-check useEffect pair (against lib/taskUnlocks). Both are gone now
+  // — the central trigger engine in app/_layout.tsx evaluates lib/unlockTriggers
+  // on every snapshot change, so per-tab effects are obsolete. The counter
+  // (incrementTotalTasksCreated) and the active-count selector in the root
+  // layout drive the same thresholds without scattered checks.
 
   const scheduleNotificationForTask = async (taskData: Partial<Task>): Promise<string | undefined> => {
     if (!taskData.hasReminder || !taskData.deadlineDate || !taskData.reminderTime || taskData.completed) return undefined;
@@ -739,6 +880,9 @@ export default function TodoScreen() {
       const now = Date.now();
       const voidTask: Task = { id: now.toString(), text: ' ', notes: '', completed: false, createdAt: now, deadlineDate: '', deadlineTime: '', hasReminder: false, priority: 'Low', color: COLORS[7], subTasks: [], hasProgress: false, progress: 0, recurType: 'none', lastTouchedAt: now };
       setTasks([...useAppStore.getState().tasks, voidTask]);
+      // Void still counts toward the unlock counter — it's a real (if weird)
+      // task creation, and excluding it would be a side channel.
+      useAppStore.getState().incrementTotalTasksCreated();
       setQuickTaskText('');
       return;
     }
@@ -746,10 +890,12 @@ export default function TodoScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     const now = Date.now();
     const currentTasks = useAppStore.getState().tasks;
-    const seen = useAppStore.getState().whispersSeen || [];
-    const fireFirstTask = currentTasks.length === 0 && !seen.includes('first_task');
+    const seen = useAppStore.getState().whispersSeen || {};
+    const fireFirstTask = currentTasks.length === 0 && !seen['first_task'];
     const newT: Task = { id: now.toString(), text: quickTaskText.trim(), notes: '', completed: false, createdAt: now, deadlineDate: '', deadlineTime: '', hasReminder: false, priority: 'Medium', color: COLORS[1], subTasks: [], hasProgress: false, progress: 0, recurType: 'none', lastTouchedAt: now };
     setTasks([...currentTasks, newT]);
+    // Monotonic counter — feeds the SUBTASKS / RECURRING / PROJECTS triggers.
+    useAppStore.getState().incrementTotalTasksCreated();
     setQuickTaskText('');
     if (fireFirstTask) {
       markWhisperSeen('first_task');
@@ -764,6 +910,7 @@ export default function TodoScreen() {
       const now = Date.now();
       const voidTask: Task = { id: now.toString(), text: ' ', notes: '', completed: false, createdAt: now, deadlineDate: '', deadlineTime: '', hasReminder: false, priority: 'Low', color: COLORS[7], subTasks: [], hasProgress: false, progress: 0, recurType: 'none', lastTouchedAt: now };
       setTasks([...useAppStore.getState().tasks, voidTask]);
+      useAppStore.getState().incrementTotalTasksCreated();
       setTaskModalVisible(false);
       return;
     }
@@ -776,8 +923,8 @@ export default function TodoScreen() {
 
     // Always read current tasks from store — avoids stale closure
     const currentTasks = useAppStore.getState().tasks;
-    const seen = useAppStore.getState().whispersSeen || [];
-    const fireFirstTask = !currentEditingTask && currentTasks.length === 0 && !seen.includes('first_task');
+    const seen = useAppStore.getState().whispersSeen || {};
+    const fireFirstTask = !currentEditingTask && currentTasks.length === 0 && !seen['first_task'];
 
     // Promise transition detection — increment madeTotal/monthlyMade ONLY on
     // false→true. Toggling off then on doesn't double-count, but a task
@@ -801,6 +948,9 @@ export default function TodoScreen() {
     else { updatedTasks.push({ id: targetId, completed: false, createdAt: now, hasProgress: (data.subTasks?.length || 0) > 0, progress: calculateProgress(data.subTasks), lastTouchedAt: now, ...data } as Task); }
 
     setTasks(updatedTasks);
+    // Only fresh creations push the counter; editing an existing task doesn't
+    // count as a new task event.
+    if (!currentEditingTask) useAppStore.getState().incrementTotalTasksCreated();
     setTaskModalVisible(false);
     if (fireFirstTask) {
       markWhisperSeen('first_task');
@@ -860,13 +1010,13 @@ export default function TodoScreen() {
       useAppStore.getState().autoCheckIntentsForTask(id);
     }
     if (targetNotifId) cancelTaskNotification(targetNotifId);
-    const seen = useAppStore.getState().whispersSeen || [];
-    if (voidCompleted && !seen.includes('the_void')) {
+    const seen = useAppStore.getState().whispersSeen || {};
+    if (voidCompleted && !seen['the_void']) {
       markWhisperSeen('the_void');
       setTimeout(() => showWhisper("You created nothing. The system accepted it. Some days are like that."), 400);
       return;
     }
-    if (justCompleted && !seen.includes('fifty_tasks')) {
+    if (justCompleted && !seen['fifty_tasks']) {
       const completedCount = updated.filter(x => x.completed && x.completedAt).length;
       if (completedCount >= 50) {
         markWhisperSeen('fifty_tasks');
@@ -896,6 +1046,37 @@ export default function TodoScreen() {
     setTasks(useAppStore.getState().tasks.map(x => x.id === t.id ? { ...x, status: 'archived' as TaskStatus, notificationId: undefined } : x));
   }, [setTasks]);
 
+  // Opens the rest picker for an overdue task. The very first time the user
+  // sees this picker (per the 'rest_intro' whisper key), fire a single line
+  // introducing the feature — context-of-use teaching, no separate tutorial.
+  // Subsequent overdue tasks just open the picker silently.
+  const handleRestTask = useCallback((t: Task) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setRestTarget(t);
+    const seen = useAppStore.getState().whispersSeen || {};
+    if (!seen['rest_intro']) {
+      markWhisperSeen('rest_intro');
+      setTimeout(() => showWhisper("That deadline passed. Rest this one — bring it back when you're ready."), 500);
+    }
+  }, [markWhisperSeen, showWhisper]);
+
+  // Applies the chosen wake date and puts the task into 'resting' status. The
+  // phoenix wake logic in wakePhoenixTasks (runs on focus) will surface the
+  // task back into the active list when nextWakeDate <= today. Notification
+  // is cancelled — it'd misfire while the task is dormant.
+  const restTaskUntil = useCallback((task: Task, wakeDate: string) => {
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    if (task.notificationId) cancelTaskNotification(task.notificationId);
+    setTasks(useAppStore.getState().tasks.map(x => x.id === task.id ? {
+      ...x,
+      status: 'resting' as TaskStatus,
+      nextWakeDate: wakeDate,
+      notificationId: undefined,
+      lastTouchedAt: Date.now(),
+    } : x));
+    setRestTarget(null);
+  }, [setTasks]);
+
   const clearDoneTasks = useCallback(() => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     const now = Date.now(); const nextTasks: Task[] = [];
@@ -921,16 +1102,44 @@ export default function TodoScreen() {
     setTasks(nextTasks);
   }, [setTasks]);
 
+  // Opens the delete-project modal with the toggle reset to off. We always
+  // reset on open — leaking the previous "also delete tasks" state across
+  // unrelated project deletions would invite very expensive accidents.
   const handleDeleteProject = useCallback((pid: string) => {
-    setConfirmDialog({
-      visible: true, title: "Delete Project?", message: "This will remove the project. Any tasks inside will be safely moved back to your Inbox.", destructiveLabel: "Delete Project",
-      onConfirm: () => {
-        deleteProject(pid);
-        setTasks(useAppStore.getState().tasks.map(t => t.projectId === pid ? { ...t, projectId: undefined } : t));
-        setConfirmDialog(null);
+    setDeleteProjectAlsoTasks(false);
+    setDeleteProjectId(pid);
+  }, []);
+
+  // Applies the delete. With the toggle off, tasks inside the project lose
+  // their projectId and re-emerge in the Inbox (current default behavior).
+  // With the toggle on, those same tasks are moved to status='trash' — that
+  // way the user keeps recovery via the trash vault instead of vaporising
+  // potentially weeks of work. Notifications on those tasks are cancelled
+  // either way to keep the scheduler clean.
+  const confirmDeleteProject = useCallback(() => {
+    if (!deleteProjectId) return;
+    const pid = deleteProjectId;
+    const alsoDelete = deleteProjectAlsoTasks;
+    const now = Date.now();
+    const current = useAppStore.getState().tasks;
+    if (alsoDelete) {
+      // Bulk-trash. Cancel any pending notifications for the affected tasks
+      // before the array is mutated so we still have access to their IDs.
+      for (const t of current) {
+        if (t.projectId === pid && t.notificationId) {
+          cancelTaskNotification(t.notificationId);
+        }
       }
-    });
-  }, [setTasks, deleteProject]);
+      setTasks(current.map(t => t.projectId === pid
+        ? { ...t, status: 'trash' as TaskStatus, projectId: undefined, notificationId: undefined, lastTouchedAt: now }
+        : t));
+    } else {
+      setTasks(current.map(t => t.projectId === pid ? { ...t, projectId: undefined } : t));
+    }
+    deleteProject(pid);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    setDeleteProjectId(null);
+  }, [deleteProjectId, deleteProjectAlsoTasks, setTasks, deleteProject]);
 
   // getState() removes `projects` from deps — feedData no longer re-runs on unrelated project changes
   const handleArchiveProject = useCallback((pid: string) => {
@@ -942,8 +1151,8 @@ export default function TodoScreen() {
 
   // ── RECLAIM ── one-time whisper shared by task + folder Take Action
   const fireReclaimWhisper = useCallback(() => {
-    const seen = useAppStore.getState().whispersSeen || [];
-    if (!seen.includes('reclaim_first')) {
+    const seen = useAppStore.getState().whispersSeen || {};
+    if (!seen['reclaim_first']) {
       markWhisperSeen('reclaim_first');
       setTimeout(() => showWhisper("Reclaimed. The drift ends."), 350);
     }
@@ -988,6 +1197,19 @@ export default function TodoScreen() {
     }
     setTaskModalVisible(true);
   }, [forcedProjectId]);
+
+  // Promote an inbox task into "today" by stamping startDate = today. We use
+  // startDate (not deadlineDate) deliberately — the user is choosing to work on
+  // it today, not declaring a deadline. Stamps lastTouchedAt so the seed-task
+  // dormancy timer also resets. Closes the picker so the user lands back on
+  // their freshly-populated today section.
+  const promoteToToday = useCallback((taskId: string) => {
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    const t = todayStr();
+    const cur = useAppStore.getState().tasks;
+    setTasks(cur.map(x => x.id === taskId ? { ...x, startDate: t, lastTouchedAt: Date.now() } : x));
+    setPickFromInboxVisible(false);
+  }, [setTasks]);
 
   // ── DEEP WORK HANDLERS ──────────────────────────────────────────────────────
 
@@ -1043,14 +1265,19 @@ export default function TodoScreen() {
 
   const cancelDeepWork = useCallback(() => {
     if (!dwSession) { setDwFocusVisible(false); return; }
+    const elapsed = Math.max(0, Date.now() - dwSession.startedAt);
+
+    // Open sessions: tapping cancel IS the natural completion (no fixed
+    // duration to complete against). Celebrate, then route to reflection —
+    // unchanged from prior behaviour.
     if (dwSession.open) {
-      const finalDuration = Math.max(0, Date.now() - dwSession.startedAt);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setTimeout(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy), 200);
-      setDwSession({ ...dwSession, durationMs: finalDuration });
+      setDwSession({ ...dwSession, durationMs: elapsed });
       setDwCelebrating(true);
       setDwReflectionRating(null);
       setDwReflectionText('');
+      setDwMarkDone(false);
       setTimeout(() => {
         setDwCelebrating(false);
         setDwFocusVisible(false);
@@ -1058,15 +1285,30 @@ export default function TodoScreen() {
       }, 1800);
       return;
     }
-    setConfirmDialog({
-      visible: true, title: 'End early?', message: "The session won't be saved.", destructiveLabel: 'End now',
-      onConfirm: () => {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-        setDwFocusVisible(false);
-        setDwSession(null);
-        setConfirmDialog(null);
-      }
-    });
+
+    // Timed early-exit: previously this confirmed "won't be saved" and threw
+    // away whatever the user had done — losing a 1.5h chunk of a planned 2h
+    // session was the worst case. New shape: any session over 60s routes to
+    // the same reflection sheet as a naturally-completed session, with elapsed
+    // time captured. The reflection's "Skip this one" button remains the
+    // explicit discard path, so the user keeps control without an extra
+    // confirm. Sub-60s (mistaps, immediate "never mind") discard silently —
+    // popping a sheet over 20s of work would be noise.
+    const MIN_KEEP_MS = 60 * 1000;
+    if (elapsed >= MIN_KEEP_MS) {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      setDwSession({ ...dwSession, durationMs: elapsed });
+      setDwReflectionRating(null);
+      setDwReflectionText('');
+      setDwMarkDone(false);
+      setDwFocusVisible(false);
+      setDwReflectVisible(true);
+      return;
+    }
+
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setDwFocusVisible(false);
+    setDwSession(null);
   }, [dwSession]);
 
   useEffect(() => {
@@ -1083,6 +1325,7 @@ export default function TodoScreen() {
         setDwCelebrating(true);
         setDwReflectionRating(null);
         setDwReflectionText('');
+        setDwMarkDone(false);
         setTimeout(() => {
           setDwCelebrating(false);
           setDwFocusVisible(false);
@@ -1109,32 +1352,100 @@ export default function TodoScreen() {
     addDeepWorkSession(session);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
-    if (dwSession.intent === 'task' && dwSession.targetId) {
-      const linked = useAppStore.getState().tasks.find(t => t.id === dwSession.targetId);
-      if (linked && !linked.completed) {
-        setDwReflectVisible(false);
-        const targetId = dwSession.targetId;
-        setDwSession(null);
-        setConfirmDialog({
-          visible: true, title: 'Mark task complete?', message: `"${linked.text}" — finished, or just made progress?`, destructiveLabel: 'Mark complete',
-          onConfirm: () => {
-            const cur = useAppStore.getState().tasks;
-            setTasks(cur.map(t => t.id === targetId ? { ...t, completed: true, completedAt: Date.now() } : t));
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-            setConfirmDialog(null);
+    // In-sheet "Mark done" — applies the user's opt-in BEFORE the session is
+    // persisted so any downstream side-effects (intent auto-check, challenge
+    // achievement, linked-habit advancement) see a consistent state. Previously
+    // a post-save confirm asked the same question only for tasks, and not at
+    // all for habits/challenges; the toggle on the reflection sheet replaces
+    // that with explicit, in-context closure. All three branches are
+    // idempotent: task already complete → no-op above (toggle hidden); habit
+    // already at target → no-op above; challenge already logged today → the
+    // logDates check below short-circuits.
+    if (dwMarkDone && dwSession.targetId) {
+      const today = todayStr();
+      if (dwSession.intent === 'task') {
+        const cur = useAppStore.getState().tasks;
+        setTasks(cur.map(t => t.id === dwSession.targetId
+          ? { ...t, completed: true, completedAt: Date.now(), progress: 100, lastTouchedAt: Date.now() }
+          : t));
+        useAppStore.getState().autoCheckIntentsForTask(dwSession.targetId);
+      } else if (dwSession.intent === 'habit') {
+        useAppStore.getState().toggleHabitAction(dwSession.targetId, 'done', today);
+        useAppStore.getState().autoCheckIntentsForHabit(dwSession.targetId, today);
+        useAppStore.getState().advanceLinkedChallengesForHabit(dwSession.targetId, today);
+      } else if (dwSession.intent === 'challenge') {
+        const cur = useAppStore.getState().challenges;
+        const c = cur.find(x => x.id === dwSession.targetId);
+        if (c) {
+          const existingLogs = c.logDates || [];
+          if (!existingLogs.includes(today)) {
+            const newCurrent = Math.min(c.target, c.current + 1);
+            const appliedDelta = newCurrent - c.current;
+            const isAchieved = newCurrent >= c.target && c.deadState === 'active';
+            useAppStore.getState().setChallenges(cur.map(x => x.id === c.id ? {
+              ...x, current: newCurrent, lastLoggedAt: Date.now(),
+              logDates: [...existingLogs, today],
+              ledger: [...(x.ledger || []), makeLedgerEntry(appliedDelta, 'deepwork')],
+              ...(isAchieved ? { deadState: 'achieved' as const, achievedAt: Date.now() } : {}),
+            } : x));
+            useAppStore.getState().autoCheckIntentsForChallenge(c.id, today);
           }
-        });
-        return;
+        }
       }
     }
-    setDwReflectVisible(false); setDwSession(null);
-  }, [dwSession, dwReflectionText, dwReflectionRating, addDeepWorkSession, setTasks]);
+
+    setDwReflectVisible(false);
+    setDwSession(null);
+    setDwMarkDone(false);
+  }, [dwSession, dwReflectionText, dwReflectionRating, dwMarkDone, addDeepWorkSession, setTasks]);
 
   const skipDeepWorkReflection = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setDwReflectVisible(false);
     setDwSession(null);
+    setDwMarkDone(false);
   }, []);
+
+  // Linked-target descriptor for the reflection sheet's Mark Done row. Returns
+  // null when the session was Free, when there's no linkable target, or when
+  // the target is already in a "no-op" state (task completed, habit at target,
+  // challenge dead / logged today / at target). null hides the toggle entirely.
+  const linkedTarget = useMemo(() => {
+    if (!dwSession || !dwSession.targetId) return null;
+    const today = todayStr();
+    if (dwSession.intent === 'task') {
+      const t = tasks.find(x => x.id === dwSession.targetId);
+      if (!t || t.completed) return null;
+      return { kind: 'task' as const, label: 'Mark task done', icon: 'check-circle' as keyof typeof Feather.glyphMap };
+    }
+    if (dwSession.intent === 'habit') {
+      const h = habits.find(x => x.id === dwSession.targetId);
+      if (!h) return null;
+      const todayCount = h.history.filter(d => d === today).length;
+      if (todayCount >= h.targetCount) return null;
+      const after = todayCount + 1;
+      return {
+        kind: 'habit' as const,
+        label: h.targetCount > 1 ? `Log habit (${after}/${h.targetCount})` : 'Log habit for today',
+        icon: 'repeat' as keyof typeof Feather.glyphMap,
+      };
+    }
+    if (dwSession.intent === 'challenge') {
+      const c = challenges.find(x => x.id === dwSession.targetId);
+      if (!c) return null;
+      const isOpen = c.deadState === 'active' || c.deadState === 'resurrected';
+      if (!isOpen) return null;
+      if ((c.logDates || []).includes(today)) return null;
+      if (c.current >= c.target) return null;
+      const unit = c.unit ? ` ${c.unit}` : '';
+      return {
+        kind: 'challenge' as const,
+        label: `+1 progress (${c.current + 1} / ${c.target}${unit})`,
+        icon: 'arrow-up-right' as keyof typeof Feather.glyphMap,
+      };
+    }
+    return null;
+  }, [dwSession, tasks, habits, challenges]);
 
   // ── ADHD HANDLERS ────────────────────────────────────────────────────────
 
@@ -1199,6 +1510,17 @@ export default function TodoScreen() {
 
   // Memoized vault lists — never computed inline in JSX
   const trashTasks = useMemo(() => tasks.filter(t => t.status === 'trash'), [tasks]);
+
+  // Bulk-purge everything in the trash. Mirrors the per-item "Purge Forever"
+  // action but for the whole trash at once; confirmed before it runs.
+  const purgeAllTrash = useCallback(() => {
+    if (useAppStore.getState().tasks.filter(t => t.status === 'trash').length === 0) return;
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    setConfirmDialog({ visible: true, title: 'Purge trash?', message: "Permanently delete every task in the trash? This can't be undone.", destructiveLabel: 'Purge all', onConfirm: () => {
+      setTasks(useAppStore.getState().tasks.filter(t => t.status !== 'trash'));
+      setConfirmDialog(null);
+    } });
+  }, [setTasks]);
   const archivedTasks = useMemo(() => tasks.filter(t => t.status === 'archived'), [tasks]);
   const archivedProjects = useMemo(() => projects.filter(p => p.status === 'archived'), [projects]);
   const rawActiveProjects = useMemo(() => projects.filter(p => p.status !== 'archived'), [projects]);
@@ -1274,7 +1596,14 @@ export default function TodoScreen() {
       }
     }
 
-    if (tasks.length === 0) flatData.push({ type: 'empty_art', id: 'sys_empty' });
+    // Empty state — fires when nothing is visible to the user, not just when
+    // tasks.length === 0. Previous check missed the case where every task was
+    // in trash/archived/resting and there were no active projects → no feed
+    // items rendered → tab showed as blank white. Now: if no active tasks
+    // anywhere AND no project folders to show, drop the empty card.
+    if (baseActiveTasks.length === 0 && activeProjects.length === 0) {
+      flatData.push({ type: 'empty_art', id: 'sys_empty' });
+    }
 
     // Projects section header — variant 4 accent-underline style, matches TODAY / INBOX / SCHEDULED / COMPLETED rhythm
     if (activeProjects.length > 0) {
@@ -1290,6 +1619,31 @@ export default function TodoScreen() {
 
       const seedInfo = projectSeedInfo.get(p.id);
       flatData.push({ type: 'project_header', id: `p_${p.id}`, project: p, activeCount: active.length, pct, isExp: isProjExp, isSeed: !!seedInfo?.isSeed, daysDormant: seedInfo?.daysDormant || 0 });
+
+      // Conditional urgent-task preview under collapsed projects. Surfaces the
+      // single highest-urgency task in the folder when it's at level "high" or
+      // worse (≤24h / critical / overdue). Silent when calm — keeps the project
+      // list quiet by default, vocal only when something needs attention.
+      // Tapping the preview opens the project AND expands the task so the user
+      // lands directly on the actionable thing instead of having to scan again.
+      if (!isProjExp && active.length > 0) {
+        const rank = (u: UrgencyLevel) => u === 'overdue' ? 5 : u === 'critical' ? 4 : u === 'high' ? 3 : 0;
+        let topUrgent: Task | null = null;
+        let topUrgency: UrgencyLevel = 'none';
+        let topRank = 0;
+        for (const t of active) {
+          const u = getUrgency(t);
+          const r = rank(u);
+          if (r >= 3 && r > topRank) {
+            topUrgent = t;
+            topUrgency = u;
+            topRank = r;
+          }
+        }
+        if (topUrgent) {
+          flatData.push({ type: 'project_urgent_preview', id: `p_urg_${p.id}`, task: topUrgent, urgency: topUrgency, projectId: p.id, projectColor: p.color });
+        }
+      }
 
       if (isProjExp) {
         if (pct === 100 && ptasks.length > 0) flatData.push({ type: 'project_arc_btn', id: `p_arc_${p.id}`, projectId: p.id });
@@ -1355,7 +1709,58 @@ export default function TodoScreen() {
   }, []);
 
   const renderFlashListItem = useCallback(({ item }: any) => {
-    if (item.type === 'empty_art') return <EmptyArt icon="check-circle" message="Nothing pending. Either you're done, or you're avoiding something." theme={theme} />;
+    if (item.type === 'empty_art') {
+      // Richer empty state than the EmptyArt utility — that one is right for
+      // vault sub-tabs (trash / archive / projects), where the user is
+      // expected to find an empty list and move on. The main tab being empty
+      // is a moment that deserves more weight: typography hierarchy (title +
+      // body), a real CTA, and an icon with enough presence to read against
+      // the bg. Voice line preserved verbatim from the original.
+      return (
+        <View style={{ alignItems: 'center', paddingTop: 56, paddingHorizontal: 32, paddingBottom: 80 }}>
+          <View style={{
+            width: 72, height: 72, borderRadius: 36,
+            backgroundColor: hexToRgba(theme.textMain, 0.05),
+            borderWidth: 1, borderColor: theme.border,
+            alignItems: 'center', justifyContent: 'center',
+            marginBottom: 24,
+          }}>
+            <Feather name="check-circle" size={30} color={theme.textMain} style={{ opacity: 0.4 }} />
+          </View>
+          <Text style={{
+            color: theme.textMain, fontSize: 22, fontWeight: '900',
+            letterSpacing: -0.5, marginBottom: 10, textAlign: 'center',
+          }}>
+            All caught up.
+          </Text>
+          <Text style={{
+            color: theme.textSub, fontSize: 14, fontWeight: '500',
+            lineHeight: 21, textAlign: 'center', marginBottom: 28,
+            maxWidth: 280,
+          }}>
+            Add anything you want to track. Deadlines, recurring stuff, half-thoughts — capture it here.
+          </Text>
+          <TouchableOpacity
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setForcedProjectId(null);
+              openTaskSheet();
+            }}
+            activeOpacity={0.85}
+            style={{
+              flexDirection: 'row', alignItems: 'center', gap: 8,
+              paddingHorizontal: 18, paddingVertical: 12, borderRadius: 12,
+              backgroundColor: theme.textMain,
+            }}
+          >
+            <Feather name="plus" size={14} color={theme.bg} />
+            <Text style={{ color: theme.bg, fontSize: 13, fontWeight: '900', letterSpacing: 0.3 }}>
+              Capture a task
+            </Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
     if (item.type === 'promise_tally') {
       // Reflective, not punitive — neutral palette, no exclamation marks,
       // no "you broke X promises" framing. The stat is a quiet record;
@@ -1418,11 +1823,29 @@ export default function TodoScreen() {
         <View style={{ height: 2, backgroundColor: theme.textMain, width: 28, borderRadius: 1 }} />
       </View>
     );
-    if (item.type === 'today_empty') return (
-      <View style={{ paddingVertical: 16, paddingHorizontal: 4, marginBottom: 16, borderRadius: 12, borderWidth: 1, borderColor: theme.border, borderStyle: 'dashed', alignItems: 'center' }}>
-        <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '700', opacity: 0.7 }}>Nothing scheduled for today.</Text>
-      </View>
-    );
+    if (item.type === 'today_empty') {
+      // When the inbox has open items, the empty-today state is also an
+      // invitation: "pull something forward." The CTA isn't auto-applied
+      // because being clamped with new deadlines without consent feels worse
+      // than being asked. With no inbox, fall back to the plain quiet line.
+      const hasInbox = activeInbox.length > 0;
+      return (
+        <View style={{ paddingVertical: 18, paddingHorizontal: 14, marginBottom: 16, borderRadius: 12, borderWidth: 1, borderColor: theme.border, borderStyle: 'dashed', alignItems: 'center', gap: hasInbox ? 12 : 0 }}>
+          <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '700', opacity: 0.7, textAlign: 'center' }}>
+            {hasInbox ? "Nothing on today's plate. Pull from the inbox?" : "Nothing scheduled for today."}
+          </Text>
+          {hasInbox ? (
+            <TouchableOpacity
+              onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setPickFromInboxVisible(true); }}
+              style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10, backgroundColor: theme.textMain }}
+            >
+              <Feather name="inbox" size={13} color={theme.bg} />
+              <Text style={{ color: theme.bg, fontSize: 12, fontWeight: '900', letterSpacing: 0.3 }}>Add from inbox</Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
+      );
+    }
     if (item.type === 'scheduled_header') return (
       <View style={{ marginTop: 14, marginBottom: 14 }}>
         <TouchableOpacity onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setScheduledOpen(!item.isOpen); }} style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 4 }}>
@@ -1493,6 +1916,30 @@ export default function TodoScreen() {
         </TouchableOpacity>
       </View>
     );
+    if (item.type === 'project_urgent_preview') {
+      // Visually nested under its project header: negative marginTop pulls it
+      // up into the header's 16px bottom margin, left indent + project-colored
+      // left border signal "this belongs to the project above". Tap routes
+      // straight to the urgent task: open the project AND expand the task.
+      const urg = item.urgency as UrgencyLevel;
+      const urgColor = urg === 'overdue' || urg === 'critical' || urg === 'high' ? theme.danger : theme.warning;
+      const urgLabel = urg === 'overdue' ? 'OVERDUE' : urg === 'critical' ? 'CRITICAL' : urg === 'high' ? '< 24H' : urg.toUpperCase();
+      return (
+        <TouchableOpacity
+          onPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            setExpandedProjectId(item.projectId);
+            setExpandedId(item.task.id);
+          }}
+          activeOpacity={0.85}
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: -8, marginBottom: 14, marginLeft: 16, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 10, backgroundColor: theme.bg, borderLeftWidth: 3, borderLeftColor: item.projectColor }}
+        >
+          <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: urgColor }} />
+          <Text style={[{ flex: 1, color: theme.textMain, fontSize: 12, fontWeight: '700' }, rtlTextStyle(item.task.text)]} numberOfLines={1}>{item.task.text}</Text>
+          <Text style={{ color: urgColor, fontSize: 9, fontWeight: '900', letterSpacing: 0.5 }}>{urgLabel}</Text>
+        </TouchableOpacity>
+      );
+    }
 
     // urgency pre-computed in feedData — TaskCard does zero work
     return <TaskCard
@@ -1513,8 +1960,9 @@ export default function TodoScreen() {
       onEdit={openTaskSheet}
       onExpand={(id: string) => handleExpand(id, item.isExp)}
       onReclaim={handleReclaimTask}
+      onRest={handleRestTask}
     />;
-  }, [theme, completedInbox.length, calendarType, clearDoneTasks, handleArchiveProject, openTaskSheet, handleCheck, handleSubCheck, handleTrash, handleArchiveTask, handleExpand, scheduledOpen, handleReclaimTask, handleReclaimProject, handleDeleteProject, activeProjects, promiseStats, tasks]);
+  }, [theme, completedInbox.length, calendarType, clearDoneTasks, handleArchiveProject, openTaskSheet, handleCheck, handleSubCheck, handleTrash, handleArchiveTask, handleExpand, scheduledOpen, handleReclaimTask, handleReclaimProject, handleDeleteProject, handleRestTask, activeProjects, promiseStats, tasks, activeInbox.length]);
 
   return (
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: theme.bg }}>
@@ -1535,9 +1983,22 @@ export default function TodoScreen() {
               </View>
 
               <View style={{ flexDirection: 'row', gap: 16, alignItems: 'center' }}>
-                <TouchableOpacity onPress={() => { setEditingProjectId(null); setNewProjName(''); setNewProjColor(COLORS[0]); projectModalRef.current?.present(); }} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
-                  <Feather name="folder-plus" size={20} color={theme.textMain} />
-                </TouchableOpacity>
+                {/* ADHD Mode lives as a tile next to Deep Work (below), not as
+                    a header icon — keeps the header uncluttered. */}
+                {/* Folder-plus appears only after the Projects unlock crosses
+                    (8 total tasks). Per spec the new-dot lives on the Projects
+                    section header inside the add/edit sheet, not here — this
+                    button just appears/disappears with the unlock. */}
+                {projectsUnlocked ? (
+                  <TouchableOpacity onPress={() => {
+                    setEditingProjectId(null);
+                    setNewProjName('');
+                    setNewProjColor(COLORS[0]);
+                    projectModalRef.current?.present();
+                  }} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
+                    <Feather name="folder-plus" size={20} color={theme.textMain} />
+                  </TouchableOpacity>
+                ) : null}
                 <TouchableOpacity onPress={() => vaultSheetRef.current?.present()} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
                   <Feather name="archive" size={20} color={theme.textMain} />
                 </TouchableOpacity>
@@ -1547,40 +2008,14 @@ export default function TodoScreen() {
               </View>
             </View>
 
-            {/* ── DEEP WORK ENTRY BUTTON ── */}
-            <View style={{ paddingHorizontal: 20, paddingVertical: 16 }}>
-              <TouchableOpacity
-                onPress={openDeepWorkPicker}
-                activeOpacity={0.85}
-                style={{ padding: 18, borderRadius: 16, backgroundColor: theme.textMain, flexDirection: 'row', alignItems: 'center', gap: 14 }}
-              >
-                <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: hexToRgba('#FFFFFF', 0.12), alignItems: 'center', justifyContent: 'center' }}>
-                  <Feather name="circle" size={14} color={theme.bg} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={{ color: theme.bg, fontSize: 15, fontWeight: '900', letterSpacing: -0.2 }}>Deep Work</Text>
-                  <Text style={{ color: theme.bg, fontSize: 11, fontWeight: '600', opacity: 0.6, marginTop: 2 }}>
-                    {deepWorkSessions.length === 0 ? 'Begin your first focused session.' : `${deepWorkSessions.length} session${deepWorkSessions.length === 1 ? '' : 's'} kept · pick a target`}
-                  </Text>
-                </View>
-                <Feather name="chevron-right" size={16} color={theme.bg} style={{ opacity: 0.6 }} />
-              </TouchableOpacity>
-              {adhdPool.length > 0 && (
-                <TouchableOpacity
-                  onPress={openAdhdMode}
-                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                  style={{ alignSelf: 'center', marginTop: 12, paddingVertical: 4, paddingHorizontal: 10 }}
-                >
-                  <Text style={{ color: theme.textSub, fontSize: 11, fontWeight: '700' }}>
-                    Overwhelmed? Try ADHD mode →
-                  </Text>
-                </TouchableOpacity>
-              )}
-            </View>
-
-            {/* ── FLASHLIST ── */}
+            {/* ── FLASHLIST ── Deep Work + ADHD tiles live as ListHeaderComponent
+                — first scroll positions in the list, hidden by a one-shot
+                scrollToOffset on focus that lands the user past them with a
+                PEEK strip visible as discovery hint. Pulling up = scrolling
+                to top = native scroll mechanics = 120fps smooth on any device. */}
             <View style={{ flex: 1 }}>
               <FlashList
+                ref={listRef}
                 data={feedData}
                 keyExtractor={item => item.id}
                 renderItem={renderFlashListItem}
@@ -1589,6 +2024,56 @@ export default function TodoScreen() {
                 contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 120 }}
                 showsVerticalScrollIndicator={false}
                 keyboardShouldPersistTaps="always"
+                ListHeaderComponent={
+                  // Deep Work + ADHD (Focus Mode) tiles, side by side. Each is
+                  // gated independently; flex:1 each so a missing sibling lets
+                  // the other take the full width. ADHD also needs a non-empty
+                  // pool to be worth showing. Neither unlocked → null header
+                  // (no row, no margin, no peek).
+                  (() => {
+                    const showDeepWork = deepWorkUnlocked;
+                    const showAdhd = adhdModeUnlocked && adhdPool.length > 0;
+                    if (!showDeepWork && !showAdhd) return null;
+                    return (
+                      <View style={{ flexDirection: 'row', gap: 10, marginTop: 8, marginBottom: 14 }}>
+                        {showDeepWork ? (
+                          <TouchableOpacity
+                            onPress={openDeepWorkPicker}
+                            activeOpacity={0.85}
+                            style={{ flex: 1, paddingVertical: 12, paddingHorizontal: 12, borderRadius: 14, backgroundColor: theme.textMain, flexDirection: 'row', alignItems: 'center', gap: 10 }}
+                          >
+                            <View style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: hexToRgba('#FFFFFF', 0.14), alignItems: 'center', justifyContent: 'center' }}>
+                              <Feather name="circle" size={12} color={theme.bg} />
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={{ color: theme.bg, fontSize: 13, fontWeight: '900', letterSpacing: -0.2 }}>Deep Work</Text>
+                              <Text style={{ color: theme.bg, fontSize: 10, fontWeight: '600', opacity: 0.6, marginTop: 1 }} numberOfLines={1}>
+                                {deepWorkSessions.length === 0 ? 'Focus session' : `${deepWorkSessions.length} kept`}
+                              </Text>
+                            </View>
+                          </TouchableOpacity>
+                        ) : null}
+                        {showAdhd ? (
+                          <TouchableOpacity
+                            onPress={openAdhdMode}
+                            activeOpacity={0.85}
+                            style={{ flex: 1, paddingVertical: 12, paddingHorizontal: 12, borderRadius: 14, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.border, flexDirection: 'row', alignItems: 'center', gap: 10 }}
+                          >
+                            <View style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: hexToRgba(theme.textMain, 0.08), alignItems: 'center', justifyContent: 'center' }}>
+                              <Feather name="zap" size={12} color={theme.textMain} />
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={{ color: theme.textMain, fontSize: 13, fontWeight: '900', letterSpacing: -0.2 }}>ADHD Mode</Text>
+                              <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '600', marginTop: 1 }} numberOfLines={1}>
+                                {adhdPool.length} pending
+                              </Text>
+                            </View>
+                          </TouchableOpacity>
+                        ) : null}
+                      </View>
+                    );
+                  })()
+                }
               />
             </View>
 
@@ -1718,22 +2203,34 @@ export default function TodoScreen() {
                   </View>
                 </View>
 
-                {activeProjects.length > 0 ? (
-                  <View style={{ marginBottom: 26 }}>
-                    <Text style={{ color: theme.textSub, fontSize: 9, fontWeight: '900', letterSpacing: 1.3, marginBottom: 8 }}>PROJECT</Text>
+                {/* PROJECT picker — gated on the PROJECTS unlock (8 total
+                    tasks). Hides if no projects exist yet (user creates one
+                    via the folder-plus button in the tab header). The new-dot
+                    on the PROJECT label is this feature's only announcement —
+                    the unlock fires no whisper. FadeIn plays on first open
+                    after unlock (projectsIsNew), then settles once the user
+                    taps a chip (markDotSeen clears both dot and fade). */}
+                {projectsUnlocked && activeProjects.length > 0 ? (
+                  <Animated.View entering={projectsIsNew ? FadeIn.duration(300) : undefined} style={{ marginBottom: 26 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
+                      <Text style={{ color: theme.textSub, fontSize: 9, fontWeight: '900', letterSpacing: 1.3 }}>PROJECT</Text>
+                      {projectsIsNew ? (
+                        <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#3B82F6', marginLeft: 6 }} />
+                      ) : null}
+                    </View>
                     <GHScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
-                      <TouchableOpacity onPress={() => setProjectId(undefined)} style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, backgroundColor: !projectId ? theme.textMain : theme.bg, borderWidth: 1, borderColor: !projectId ? theme.textMain : theme.border, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <TouchableOpacity onPress={() => { markDotSeen(FEATURE_IDS.PROJECTS); setProjectId(undefined); }} style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, backgroundColor: !projectId ? theme.textMain : theme.bg, borderWidth: 1, borderColor: !projectId ? theme.textMain : theme.border, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                         <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: !projectId ? theme.bg : theme.textSub }} />
                         <Text style={{ color: !projectId ? theme.bg : theme.textSub, fontSize: 12, fontWeight: '800' }}>Inbox</Text>
                       </TouchableOpacity>
                       {activeProjects.map((p: Project) => (
-                        <TouchableOpacity key={p.id} onPress={() => setProjectId(p.id)} style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, backgroundColor: projectId === p.id ? p.color : theme.bg, borderWidth: 1, borderColor: projectId === p.id ? p.color : theme.border, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <TouchableOpacity key={p.id} onPress={() => { markDotSeen(FEATURE_IDS.PROJECTS); setProjectId(p.id); }} style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, backgroundColor: projectId === p.id ? p.color : theme.bg, borderWidth: 1, borderColor: projectId === p.id ? p.color : theme.border, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                           <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: projectId === p.id ? '#FFF' : p.color }} />
                           <Text style={{ color: projectId === p.id ? '#FFF' : theme.textSub, fontSize: 12, fontWeight: '800' }}>{p.name}</Text>
                         </TouchableOpacity>
                       ))}
                     </GHScrollView>
-                  </View>
+                  </Animated.View>
                 ) : <View style={{ marginBottom: 14 }} />}
 
                 {/* ── DEFERRED TIER — schedule, repeat, subtasks (spacious, 10pt labels) ── */}
@@ -1814,53 +2311,78 @@ export default function TodoScreen() {
                      context. When no deadline is set, the toggle still
                      works but the dim sub-label tells them it won't track
                      until they add a date — better than hiding the toggle
-                     entirely (would feel arbitrary). */}
-                <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 1.5, marginBottom: 12 }}>PROMISE</Text>
-                <TouchableOpacity
-                  onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setPromised(p => !p); }}
-                  activeOpacity={0.85}
-                  style={{ flexDirection: 'row', alignItems: 'center', gap: 14, padding: 16, backgroundColor: theme.bg, borderRadius: 12, borderWidth: 1, borderColor: promised ? color : theme.border, borderLeftWidth: promised ? 4 : 1, borderLeftColor: promised ? color : theme.border, marginBottom: 24 }}
-                >
-                  <Feather name={promised ? 'shield' : 'shield-off'} size={18} color={promised ? color : theme.textSub} />
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ color: promised ? theme.textMain : theme.textSub, fontSize: 14, fontWeight: '900', letterSpacing: -0.2 }}>
-                      {promised ? 'Promised' : 'Promise this?'}
-                    </Text>
-                    <Text style={{ color: theme.textSub, fontSize: 11, fontWeight: '600', marginTop: 3, opacity: 0.8 }}>
-                      {promised
-                        ? (deadlineDate ? 'Kept by deadline = mark. Missed = scar.' : 'Set a deadline to lock the promise in.')
-                        : 'Track it on your record. No pressure.'}
-                    </Text>
-                  </View>
-                  <Switch value={promised} onValueChange={(v) => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setPromised(v); }} trackColor={{ true: color }} thumbColor="#FFF" />
-                </TouchableOpacity>
-
-                <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 1.5, marginBottom: 12 }}>REPEAT ROUTINE</Text>
-                <GHScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, marginBottom: 24 }}>
-                  {REPEAT_OPTIONS.map(rt => (
-                    <TouchableOpacity key={rt} onPress={() => { setRecurType(rt); if (rt !== 'weekly' && rt !== 'custom') setRecurDays([]); if (rt !== 'monthly') setRecurDayOfMonth(undefined); }} style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, backgroundColor: theme.bg, borderWidth: 1, borderColor: recurType === rt ? theme.textMain : theme.border }}>
-                      <Text style={{ color: recurType === rt ? theme.textMain : theme.textSub, fontSize: 11, fontWeight: '800', textTransform: 'capitalize' }}>{rt}</Text>
+                     entirely (would feel arbitrary). Gated on the commitment
+                     unlock (4 active tasks); same threshold also unlocks
+                     Deep Work, but they're surfaced in different places. */}
+                {promiseUnlocked ? (
+                  <Animated.View entering={promiseIsNew ? FadeIn.duration(300) : undefined}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
+                      <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 1.5 }}>PROMISE</Text>
+                      {promiseIsNew ? (
+                        <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#3B82F6', marginLeft: 8 }} />
+                      ) : null}
+                    </View>
+                    <TouchableOpacity
+                      onPress={() => { markDotSeen(FEATURE_IDS.PROMISE); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setPromised(p => !p); }}
+                      activeOpacity={0.85}
+                      style={{ flexDirection: 'row', alignItems: 'center', gap: 14, padding: 16, backgroundColor: theme.bg, borderRadius: 12, borderWidth: 1, borderColor: promised ? color : theme.border, borderLeftWidth: promised ? 4 : 1, borderLeftColor: promised ? color : theme.border, marginBottom: 24 }}
+                    >
+                      <Feather name={promised ? 'shield' : 'shield-off'} size={18} color={promised ? color : theme.textSub} />
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ color: promised ? theme.textMain : theme.textSub, fontSize: 14, fontWeight: '900', letterSpacing: -0.2 }}>
+                          {promised ? 'Promised' : 'Promise this?'}
+                        </Text>
+                        <Text style={{ color: theme.textSub, fontSize: 11, fontWeight: '600', marginTop: 3, opacity: 0.8 }}>
+                          {promised
+                            ? (deadlineDate ? 'Kept by deadline = mark. Missed = scar.' : 'Set a deadline to lock the promise in.')
+                            : 'Track it on your record. No pressure.'}
+                        </Text>
+                      </View>
+                      <Switch value={promised} onValueChange={(v) => { markDotSeen(FEATURE_IDS.PROMISE); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setPromised(v); }} trackColor={{ true: color }} thumbColor="#FFF" />
                     </TouchableOpacity>
-                  ))}
-                </GHScrollView>
-
-                {recurType === 'weekly' || recurType === 'custom' ? (
-                  <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap', marginBottom: 24 }}>
-                    {JS_DAY_SHORT.map(d => {
-                      const isSel = recurDays.includes(d);
-                      return (
-                        <TouchableOpacity key={d} onPress={() => { if (recurType === 'custom') { setRecurDays(p => isSel ? p.filter(x => x !== d) : [...p, d]); } else { setRecurDays([d]); } }} style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, backgroundColor: theme.bg, borderWidth: 1, borderColor: isSel ? theme.textMain : theme.border }}>
-                          <Text style={{ color: isSel ? theme.textMain : theme.textSub, fontWeight: '800', fontSize: 11 }}>{d}</Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
+                  </Animated.View>
                 ) : null}
 
-                {recurType === 'monthly' ? (
-                  <View style={{ marginBottom: 24 }}>
-                    <TextInput style={{ backgroundColor: theme.bg, color: theme.textMain, padding: 12, borderRadius: 10, fontSize: 13, borderWidth: 1, borderColor: theme.border }} placeholder="Day of the month (1-31)" placeholderTextColor={theme.textSub} keyboardType="numeric" value={recurDayOfMonth?.toString() || ''} onChangeText={t => { let val = parseInt(t.replace(/[^0-9]/g, '')); if (val > 31) val = 31; if (val < 1) val = 1; setRecurDayOfMonth(isNaN(val) ? undefined : val); }} />
-                  </View>
+                {/* REPEAT ROUTINE — gated on the recurring unlock (5 total
+                    tasks). Once unlocked, this block carries the repeat type
+                    selector, the weekly/custom day picker, the monthly day
+                    input, and the next-instance preview below. Dot on the
+                    label acknowledges on any recur option tap. */}
+                {recurringUnlocked ? (
+                  <Animated.View entering={recurringIsNew ? FadeIn.duration(300) : undefined}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
+                      <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 1.5 }}>REPEAT ROUTINE</Text>
+                      {recurringIsNew ? (
+                        <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#3B82F6', marginLeft: 8 }} />
+                      ) : null}
+                    </View>
+                    <GHScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, marginBottom: 24 }}>
+                      {REPEAT_OPTIONS.map(rt => (
+                        <TouchableOpacity key={rt} onPress={() => { markDotSeen(FEATURE_IDS.RECURRING); setRecurType(rt); if (rt !== 'weekly' && rt !== 'custom') setRecurDays([]); if (rt !== 'monthly') setRecurDayOfMonth(undefined); }} style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, backgroundColor: theme.bg, borderWidth: 1, borderColor: recurType === rt ? theme.textMain : theme.border }}>
+                          <Text style={{ color: recurType === rt ? theme.textMain : theme.textSub, fontSize: 11, fontWeight: '800', textTransform: 'capitalize' }}>{rt}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </GHScrollView>
+
+                    {recurType === 'weekly' || recurType === 'custom' ? (
+                      <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap', marginBottom: 24 }}>
+                        {JS_DAY_SHORT.map(d => {
+                          const isSel = recurDays.includes(d);
+                          return (
+                            <TouchableOpacity key={d} onPress={() => { if (recurType === 'custom') { setRecurDays(p => isSel ? p.filter(x => x !== d) : [...p, d]); } else { setRecurDays([d]); } }} style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, backgroundColor: theme.bg, borderWidth: 1, borderColor: isSel ? theme.textMain : theme.border }}>
+                              <Text style={{ color: isSel ? theme.textMain : theme.textSub, fontWeight: '800', fontSize: 11 }}>{d}</Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    ) : null}
+
+                    {recurType === 'monthly' ? (
+                      <View style={{ marginBottom: 24 }}>
+                        <TextInput style={{ backgroundColor: theme.bg, color: theme.textMain, padding: 12, borderRadius: 10, fontSize: 13, borderWidth: 1, borderColor: theme.border }} placeholder="Day of the month (1-31)" placeholderTextColor={theme.textSub} keyboardType="numeric" value={recurDayOfMonth?.toString() || ''} onChangeText={t => { let val = parseInt(t.replace(/[^0-9]/g, '')); if (val > 31) val = 31; if (val < 1) val = 1; setRecurDayOfMonth(isNaN(val) ? undefined : val); }} />
+                      </View>
+                    ) : null}
+                  </Animated.View>
                 ) : null}
 
                 {/* Next-instance preview — closes the gap between "I picked a
@@ -1897,17 +2419,30 @@ export default function TodoScreen() {
                   );
                 })()}
 
-                <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 1.5, marginBottom: 12 }}>SUB-TASKS</Text>
-                {subTasks.map((s, i) => (
-                  <View key={s.id} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8, gap: 8 }}>
-                    <TextInput style={[{ flex: 1, backgroundColor: theme.bg, color: theme.textMain, padding: 12, borderRadius: 10, fontSize: 14 }, persianSafeInputStyle, rtlInputStyle(s.text)]} value={s.text} onChangeText={t => setSubTasks(prev => prev.map((x, j) => j === i ? { ...x, text: t } : x))} placeholder="Step..." placeholderTextColor={theme.textSub} />
-                    <TouchableOpacity onPress={() => setSubTasks(p => p.filter(x => x.id !== s.id))} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }} style={{ padding: 4 }}><Feather name="x" size={16} color={theme.danger} /></TouchableOpacity>
-                  </View>
-                ))}
-                <View style={{ flexDirection: 'row', gap: 8 }}>
-                  <TextInput style={[{ flex: 1, backgroundColor: theme.bg, color: theme.textMain, padding: 12, borderRadius: 10, fontSize: 14 }, persianSafeInputStyle, rtlInputStyle(newSubTxt)]} placeholder="Add step..." placeholderTextColor={theme.textSub} value={newSubTxt} onChangeText={setNewSubTxt} onSubmitEditing={() => { if (newSubTxt.trim()) { setSubTasks(p => [...p, { id: Date.now().toString(), text: newSubTxt.trim(), completed: false }]); setNewSubTxt(''); } }} returnKeyType="done" />
-                  <TouchableOpacity onPress={() => { if (newSubTxt.trim()) { setSubTasks(p => [...p, { id: Date.now().toString(), text: newSubTxt.trim(), completed: false }]); setNewSubTxt(''); } }} style={{ backgroundColor: theme.textMain, borderRadius: 10, paddingHorizontal: 16, justifyContent: 'center' }}><Feather name="plus" size={16} color={theme.bg} /></TouchableOpacity>
-                </View>
+                {/* SUB-TASKS — gated on the subtasks unlock (3 total tasks).
+                    Dot on the label acknowledges on first interaction with
+                    either an existing subtask input, the add-step input, or
+                    the plus button. */}
+                {subtasksUnlocked ? (
+                  <Animated.View entering={subtasksIsNew ? FadeIn.duration(300) : undefined}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
+                      <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 1.5 }}>SUB-TASKS</Text>
+                      {subtasksIsNew ? (
+                        <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#3B82F6', marginLeft: 8 }} />
+                      ) : null}
+                    </View>
+                    {subTasks.map((s, i) => (
+                      <View key={s.id} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8, gap: 8 }}>
+                        <TextInput style={[{ flex: 1, backgroundColor: theme.bg, color: theme.textMain, padding: 12, borderRadius: 10, fontSize: 14 }, persianSafeInputStyle, rtlInputStyle(s.text)]} value={s.text} onChangeText={t => { markDotSeen(FEATURE_IDS.SUBTASKS); setSubTasks(prev => prev.map((x, j) => j === i ? { ...x, text: t } : x)); }} placeholder="Step..." placeholderTextColor={theme.textSub} />
+                        <TouchableOpacity onPress={() => setSubTasks(p => p.filter(x => x.id !== s.id))} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }} style={{ padding: 4 }}><Feather name="x" size={16} color={theme.danger} /></TouchableOpacity>
+                      </View>
+                    ))}
+                    <View style={{ flexDirection: 'row', gap: 8 }}>
+                      <TextInput style={[{ flex: 1, backgroundColor: theme.bg, color: theme.textMain, padding: 12, borderRadius: 10, fontSize: 14 }, persianSafeInputStyle, rtlInputStyle(newSubTxt)]} placeholder="Add step..." placeholderTextColor={theme.textSub} value={newSubTxt} onChangeText={(t) => { markDotSeen(FEATURE_IDS.SUBTASKS); setNewSubTxt(t); }} onSubmitEditing={() => { if (newSubTxt.trim()) { setSubTasks(p => [...p, { id: Date.now().toString(), text: newSubTxt.trim(), completed: false }]); setNewSubTxt(''); } }} returnKeyType="done" />
+                      <TouchableOpacity onPress={() => { markDotSeen(FEATURE_IDS.SUBTASKS); if (newSubTxt.trim()) { setSubTasks(p => [...p, { id: Date.now().toString(), text: newSubTxt.trim(), completed: false }]); setNewSubTxt(''); } }} style={{ backgroundColor: theme.textMain, borderRadius: 10, paddingHorizontal: 16, justifyContent: 'center' }}><Feather name="plus" size={16} color={theme.bg} /></TouchableOpacity>
+                    </View>
+                  </Animated.View>
+                ) : null}
 
                     </ScrollView>
                   </KeyboardAvoidingView>
@@ -1919,7 +2454,12 @@ export default function TodoScreen() {
             <BottomSheetModal ref={vaultSheetRef} snapPoints={snapPoints} onChange={setSheetIndex} backdropComponent={renderBackdrop} backgroundStyle={{ backgroundColor: theme.bg, borderRadius: 32 }} handleIndicatorStyle={{ backgroundColor: theme.border, width: 40, height: 5 }}>
               <View style={{ paddingHorizontal: 24, paddingTop: 10, paddingBottom: 16, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                 <Text style={{ fontSize: 28, fontWeight: '900', color: theme.textMain, letterSpacing: -1 }}>Vault.</Text>
-                <TouchableOpacity onPress={() => vaultSheetRef.current?.dismiss()} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}><Feather name="x" size={24} color={theme.textMain} /></TouchableOpacity>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 18 }}>
+                  {vaultTab === 'trash' && trashTasks.length > 0 && (
+                    <TouchableOpacity onPress={purgeAllTrash} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}><Text style={{ color: theme.danger, fontWeight: '800', fontSize: 14 }}>Purge all</Text></TouchableOpacity>
+                  )}
+                  <TouchableOpacity onPress={() => vaultSheetRef.current?.dismiss()} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}><Feather name="x" size={24} color={theme.textMain} /></TouchableOpacity>
+                </View>
               </View>
               <View style={{ paddingHorizontal: 24, marginBottom: 20 }}>
                 <GHScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
@@ -2438,11 +2978,32 @@ export default function TodoScreen() {
                     <Text style={{ color: theme.textMain, fontSize: 22, fontWeight: '900', letterSpacing: -0.5, marginBottom: 6 }}>
                       {Math.round(dwSession.durationMs / 60000)} minutes on
                     </Text>
-                    <Text style={{ color: theme.textMain, fontSize: 18, fontWeight: '700', marginBottom: 24 }} numberOfLines={2}>
+                    <Text style={{ color: theme.textMain, fontSize: 18, fontWeight: '700', marginBottom: linkedTarget ? 16 : 24 }} numberOfLines={2}>
                       {dwSession.targetTitle}
                     </Text>
                   </>
                 )}
+
+                {/* Mark Done — only rendered when the session was linked to a
+                    target that's still actionable. Toggle, not immediate
+                    action: holds the user's choice and applies on Save so they
+                    can change their mind. Copy varies by intent (mark task /
+                    log habit / +1 challenge). */}
+                {linkedTarget ? (
+                  <TouchableOpacity
+                    onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setDwMarkDone(v => !v); }}
+                    activeOpacity={0.85}
+                    style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, marginBottom: 22, borderRadius: 12, backgroundColor: dwMarkDone ? hexToRgba(theme.success, 0.12) : (isDarkMode ? '#111' : theme.bg), borderWidth: 1, borderColor: dwMarkDone ? theme.success : theme.border }}
+                  >
+                    <View style={{ width: 22, height: 22, borderRadius: 6, borderWidth: 1.5, borderColor: dwMarkDone ? theme.success : theme.border, backgroundColor: dwMarkDone ? theme.success : 'transparent', alignItems: 'center', justifyContent: 'center' }}>
+                      {dwMarkDone ? <Feather name="check" size={14} color="#FFF" /> : null}
+                    </View>
+                    <Text style={{ flex: 1, color: dwMarkDone ? theme.success : theme.textMain, fontSize: 14, fontWeight: '800' }}>
+                      {linkedTarget.label}
+                    </Text>
+                    <Feather name={linkedTarget.icon} size={14} color={dwMarkDone ? theme.success : theme.textSub} />
+                  </TouchableOpacity>
+                ) : null}
 
                 <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 1.5, marginBottom: 10 }}>HOW WAS IT?</Text>
                 <View style={{ flexDirection: 'row', gap: 8, marginBottom: 18 }}>
@@ -2565,7 +3126,7 @@ export default function TodoScreen() {
                               </View>
                               <Text style={{ color: theme.textMain, fontSize: 14, fontWeight: '700' }} numberOfLines={expanded ? undefined : 1}>{s.intentTargetTitle || 'Free focus'}</Text>
                               {expanded && s.reflection ? (
-                                <Text style={{ color: theme.textSub, fontSize: 13, fontWeight: '500', lineHeight: 19, marginTop: 10, fontStyle: 'italic' }}>"{s.reflection}"</Text>
+                                <Text style={{ color: theme.textSub, fontSize: 13, fontWeight: '500', lineHeight: 19, marginTop: 10, fontStyle: 'italic' }}>&quot;{s.reflection}&quot;</Text>
                               ) : null}
                               {expanded ? (
                                 <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginTop: 12 }}>
@@ -2599,6 +3160,186 @@ export default function TodoScreen() {
             </View>
           </Modal>
 
+          {/* Pull-from-inbox picker — opens from the empty-today CTA. List of
+              active inbox tasks; single tap promotes one to today and closes.
+              Bottom-sheet styling matches the reflection sheet for consistency. */}
+          <Modal visible={pickFromInboxVisible} transparent animationType="slide" onRequestClose={() => setPickFromInboxVisible(false)}>
+            <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' }}>
+              <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => setPickFromInboxVisible(false)} />
+              <View style={{ backgroundColor: theme.surface, borderTopLeftRadius: 32, borderTopRightRadius: 32, paddingTop: 16, paddingBottom: Math.max(insets.bottom, 16) + 8, maxHeight: '80%' }}>
+                <View style={{ width: 40, height: 5, borderRadius: 3, backgroundColor: theme.border, alignSelf: 'center', marginBottom: 16 }} />
+                <View style={{ paddingHorizontal: 24, marginBottom: 14 }}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ color: theme.textMain, fontSize: 22, fontWeight: '900', letterSpacing: -0.5 }}>Add to today</Text>
+                      <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '600', marginTop: 4 }}>Tap a task to pull it forward.</Text>
+                    </View>
+                    <TouchableOpacity onPress={() => setPickFromInboxVisible(false)} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
+                      <Feather name="x" size={22} color={theme.textSub} />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+                <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 8 }} showsVerticalScrollIndicator={false}>
+                  {activeInbox.length === 0 ? (
+                    <View style={{ paddingVertical: 40, alignItems: 'center' }}>
+                      <Text style={{ color: theme.textSub, fontSize: 13, fontWeight: '700' }}>Inbox is empty.</Text>
+                    </View>
+                  ) : activeInbox.map(t => {
+                    const u = getUrgency(t);
+                    const urgentChipColor = u === 'overdue' || u === 'critical' ? theme.danger : u === 'high' ? theme.danger : u === 'medium' ? theme.warning : null;
+                    return (
+                      <TouchableOpacity
+                        key={t.id}
+                        onPress={() => promoteToToday(t.id)}
+                        activeOpacity={0.85}
+                        style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, paddingHorizontal: 14, marginBottom: 8, borderRadius: 12, backgroundColor: theme.bg, borderWidth: 1, borderColor: theme.border }}
+                      >
+                        <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: t.color }} />
+                        <Text style={[{ flex: 1, color: theme.textMain, fontSize: 14, fontWeight: '700' }, rtlTextStyle(t.text)]} numberOfLines={1}>{t.text}</Text>
+                        {urgentChipColor ? (
+                          <View style={{ paddingHorizontal: 7, paddingVertical: 3, borderRadius: 5, backgroundColor: hexToRgba(urgentChipColor, 0.12) }}>
+                            <Text style={{ color: urgentChipColor, fontSize: 9, fontWeight: '900', letterSpacing: 0.5 }}>{u === 'overdue' ? 'OVERDUE' : u === 'critical' ? 'CRITICAL' : u.toUpperCase()}</Text>
+                          </View>
+                        ) : t.priority === 'High' ? (
+                          <View style={{ paddingHorizontal: 7, paddingVertical: 3, borderRadius: 5, borderWidth: 1, borderColor: theme.border }}>
+                            <Text style={{ color: theme.warning, fontSize: 9, fontWeight: '900', letterSpacing: 0.5 }}>HIGH</Text>
+                          </View>
+                        ) : null}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+            </View>
+          </Modal>
+
+          {/* Rest picker — opens from the Rest button on an overdue task's
+              expanded card. Three quick offsets (tomorrow / 3 days / next week)
+              cover the common cases without forcing a full calendar interaction
+              for what's usually a 5-second decision. Selecting one stamps
+              status='resting' + nextWakeDate; phoenix wake (in the existing
+              focus effect) surfaces the task back when wake date arrives. */}
+          <Modal visible={!!restTarget} transparent animationType="slide" onRequestClose={() => setRestTarget(null)}>
+            <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' }}>
+              <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => setRestTarget(null)} />
+              <View style={{ backgroundColor: theme.surface, borderTopLeftRadius: 32, borderTopRightRadius: 32, paddingTop: 16, paddingBottom: Math.max(insets.bottom, 16) + 16, paddingHorizontal: 24 }}>
+                <View style={{ width: 40, height: 5, borderRadius: 3, backgroundColor: theme.border, alignSelf: 'center', marginBottom: 16 }} />
+                <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 2, marginBottom: 8 }}>REST UNTIL</Text>
+                <Text style={[{ color: theme.textMain, fontSize: 20, fontWeight: '900', letterSpacing: -0.5, marginBottom: 6 }, rtlTextStyle(restTarget?.text)]} numberOfLines={2}>
+                  {restTarget?.text}
+                </Text>
+                <Text style={{ color: theme.textSub, fontSize: 13, fontWeight: '600', marginBottom: 22 }}>
+                  Snooze the task. It&apos;ll come back into view on the date you pick.
+                </Text>
+
+                {(() => {
+                  // Compute the wake date strings inline. dateStringOffset
+                  // honors the user's local date boundaries so "tomorrow" is
+                  // the actual next calendar day rather than 24h from now.
+                  const offsetDate = (days: number): string => {
+                    const d = new Date();
+                    d.setDate(d.getDate() + days);
+                    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+                  };
+                  const options: { label: string; sub: string; days: number }[] = [
+                    { label: 'Tomorrow', sub: 'One day off', days: 1 },
+                    { label: 'In 3 days', sub: 'Short breather', days: 3 },
+                    { label: 'Next week', sub: '7 days from now', days: 7 },
+                  ];
+                  return (
+                    <View style={{ gap: 8, marginBottom: 14 }}>
+                      {options.map(o => (
+                        <TouchableOpacity
+                          key={o.days}
+                          onPress={() => restTarget && restTaskUntil(restTarget, offsetDate(o.days))}
+                          activeOpacity={0.85}
+                          style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, paddingHorizontal: 16, borderRadius: 12, backgroundColor: theme.bg, borderWidth: 1, borderColor: theme.border }}
+                        >
+                          <Feather name="moon" size={16} color={theme.textMain} />
+                          <View style={{ flex: 1 }}>
+                            <Text style={{ color: theme.textMain, fontSize: 14, fontWeight: '900', letterSpacing: -0.2 }}>{o.label}</Text>
+                            <Text style={{ color: theme.textSub, fontSize: 11, fontWeight: '600', marginTop: 2 }}>{o.sub}</Text>
+                          </View>
+                          <Feather name="chevron-right" size={14} color={theme.textSub} />
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  );
+                })()}
+
+                <TouchableOpacity
+                  onPress={() => setRestTarget(null)}
+                  style={{ paddingVertical: 14, borderRadius: 12, borderWidth: 1, borderColor: theme.border, alignItems: 'center' }}
+                >
+                  <Text style={{ color: theme.textSub, fontSize: 13, fontWeight: '800' }}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </Modal>
+
+          {/* Delete-project modal — replaces a plain confirm so the user can
+              opt into bulk-trashing the project's tasks. Default-off toggle
+              keeps the safe behaviour (move to Inbox) as the one-tap path; an
+              explicit flick says "yes, take everything inside with it." */}
+          {(() => {
+            const proj = deleteProjectId ? projects.find(p => p.id === deleteProjectId) : null;
+            const taskCount = deleteProjectId
+              ? tasks.filter(t => t.projectId === deleteProjectId && t.status !== 'trash' && t.status !== 'archived').length
+              : 0;
+            return (
+              <Modal visible={!!deleteProjectId} transparent animationType="fade" onRequestClose={() => setDeleteProjectId(null)}>
+                <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center', padding: 24 }}>
+                  <View style={{ backgroundColor: theme.surface, width: '100%', maxWidth: 360, borderRadius: 24, padding: 24, borderWidth: 1, borderColor: theme.border }}>
+                    <View style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: hexToRgba(theme.danger, 0.15), justifyContent: 'center', alignItems: 'center', marginBottom: 16 }}>
+                      <Feather name="alert-triangle" size={24} color={theme.danger} />
+                    </View>
+                    <Text style={{ color: theme.textMain, fontSize: 20, fontWeight: '900', marginBottom: 6 }}>
+                      Delete project?
+                    </Text>
+                    <Text style={[{ color: theme.textMain, fontSize: 15, fontWeight: '700', marginBottom: 12 }, rtlTextStyle(proj?.name)]} numberOfLines={2}>
+                      {proj?.name || ''}
+                    </Text>
+                    <Text style={{ color: theme.textSub, fontSize: 13, lineHeight: 20, marginBottom: 18 }}>
+                      {deleteProjectAlsoTasks
+                        ? (taskCount > 0
+                            ? `${taskCount} task${taskCount === 1 ? '' : 's'} inside will be moved to trash. Recoverable from the vault until you empty it.`
+                            : 'No tasks inside — the project record alone will be removed.')
+                        : (taskCount > 0
+                            ? `${taskCount} task${taskCount === 1 ? '' : 's'} inside will move to your Inbox so nothing's lost.`
+                            : 'No tasks inside — only the project record will be removed.')}
+                    </Text>
+                    {taskCount > 0 ? (
+                      <TouchableOpacity
+                        onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setDeleteProjectAlsoTasks(v => !v); }}
+                        activeOpacity={0.85}
+                        style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8, paddingHorizontal: 12, backgroundColor: theme.bg, borderRadius: 12, borderWidth: 1, borderColor: deleteProjectAlsoTasks ? theme.danger : theme.border, marginBottom: 18 }}
+                      >
+                        <Feather name="trash-2" size={15} color={deleteProjectAlsoTasks ? theme.danger : theme.textSub} />
+                        <Text style={{ flex: 1, color: deleteProjectAlsoTasks ? theme.textMain : theme.textSub, fontSize: 13, fontWeight: '800' }}>
+                          Also delete the tasks inside
+                        </Text>
+                        <Switch
+                          value={deleteProjectAlsoTasks}
+                          onValueChange={(v) => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setDeleteProjectAlsoTasks(v); }}
+                          trackColor={{ true: theme.danger }}
+                          thumbColor="#FFF"
+                        />
+                      </TouchableOpacity>
+                    ) : null}
+                    <View style={{ flexDirection: 'row', gap: 12 }}>
+                      <TouchableOpacity onPress={() => setDeleteProjectId(null)} style={{ flex: 1, paddingVertical: 14, borderRadius: 12, alignItems: 'center', backgroundColor: theme.bg, borderWidth: 1, borderColor: theme.border }}>
+                        <Text style={{ color: theme.textMain, fontWeight: '800', fontSize: 14 }}>Cancel</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity onPress={confirmDeleteProject} style={{ flex: 1, paddingVertical: 14, borderRadius: 12, alignItems: 'center', backgroundColor: theme.danger }}>
+                        <Text style={{ color: '#FFF', fontWeight: '900', fontSize: 14 }}>Delete</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </View>
+              </Modal>
+            );
+          })()}
+
           {/* ADHD Mode Modal */}
           <Modal visible={adhdVisible} animationType="fade" transparent={false} onRequestClose={closeAdhdMode} statusBarTranslucent>
             <View style={{ flex: 1, backgroundColor: '#000' }}>
@@ -2617,7 +3358,7 @@ export default function TodoScreen() {
                     {adhdPool.length === 0 ? (
                       <View style={{ alignItems: 'center', gap: 16 }}>
                         <Text style={{ color: '#FFF', fontSize: 32, fontWeight: '900', letterSpacing: -1 }}>Nothing left.</Text>
-                        <Text style={{ color: '#666', fontSize: 14, fontWeight: '600' }}>You're clear. Take a breath.</Text>
+                        <Text style={{ color: '#666', fontSize: 14, fontWeight: '600' }}>You&apos;re clear. Take a breath.</Text>
                         <TouchableOpacity
                           onPress={closeAdhdMode}
                           style={{ marginTop: 32, paddingVertical: 14, paddingHorizontal: 32, borderRadius: 14, borderWidth: 1, borderColor: '#333' }}

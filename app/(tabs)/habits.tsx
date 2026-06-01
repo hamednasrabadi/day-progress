@@ -1,6 +1,12 @@
 import React, { useState, useCallback, useRef, useMemo, useEffect } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Platform, UIManager, Pressable, Keyboard, Dimensions, Modal, Animated as RNAnimated, BackHandler, TextInput } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Platform, UIManager, Pressable, Keyboard, Dimensions, Modal, Animated as RNAnimated, BackHandler, TextInput, AppState } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { IntentPanel } from '../../components/IntentPanel';
+import { DayRatingCheckIn } from '../../components/DayRatingCheckIn';
+import { getTheme } from '../../lib/timelineTheme';
+import { getWeeklyReviewWindow } from '../../lib/weeklyReview';
+import { rtlInputStyle } from '../../lib/rtl';
+import { SettingsSheet } from '../../components/SettingsSheet';
 import notifee, { TriggerType, RepeatFrequency } from '@notifee/react-native';
 import * as Haptics from 'expo-haptics';
 import { BlurView } from 'expo-blur';
@@ -13,9 +19,10 @@ import { FlashList } from '@shopify/flash-list';
 import { BottomSheetModal, BottomSheetModalProvider, BottomSheetBackdrop, BottomSheetScrollView } from '@gorhom/bottom-sheet';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useAppStore, Habit, HabitStatus, TimeBlock, Note } from '../../store/useAppStore';
-import { calculateStrengthScore } from '../../lib/habitScore';
+import { calculateStrengthScore, isHabitScheduledOn } from '../../lib/habitScore';
+import { FEATURE_IDS, useIsUnlocked, useIsNew } from '../../lib/unlocks';
 import {
-  Eclipse_Silence, Eclipse_Brutal, Eclipse_Hour, Eclipse_Horizon, Eclipse_NightSky,
+  Eclipse_Brutal, Eclipse_Horizon, Eclipse_NightSky,
   pickEclipseVariation, EclipseVariationKey,
 } from '../../components/DayConqueredVariations';
 
@@ -109,6 +116,16 @@ const S_MONTHS = ['Farvardin', 'Ordibehesht', 'Khordad', 'Tir', 'Mordad', 'Shahr
 // Ignored on iOS. Apply to every TextInput that can receive Persian/Arabic input.
 const persianSafeInputStyle = { includeFontPadding: false as const };
 
+// ── "Go for more" easter egg (EXPERIMENTAL) ──────────────────────────────────
+// A secret early-finish moment. SHIPS OFF — flip GO_FOR_MORE_ENABLED to true
+// only to test in dev; beta/production stay dark. Built to be HARD (conquer the
+// whole day before 4pm) and MYSTERIOUS (low chance even then, once/day, and it
+// retires forever after being ignored 3 times). Reward payload is a deferred
+// placeholder (the diary tie-in comes later).
+const GO_FOR_MORE_ENABLED = false;
+const GO_FOR_MORE_CHANCE = 0.34;      // ~1 in 3, even once you qualify
+const GO_FOR_MORE_BEFORE_HOUR = 16;   // must conquer the day before 4pm
+
 const getFormatDateStr = (date: Date = new Date()) => {
   const d = new Date(date); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().split('T')[0];
 };
@@ -153,24 +170,41 @@ const parseTimeString = (text: string) => {
   return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
 };
 
-const calculateStreak = (history: string[], restDays: string[], skippedDays: string[], targetCount: number) => {
+// Current streak = consecutive SCHEDULED days the habit was satisfied, walking
+// back from today. The key rule: days the habit isn't due on (e.g. a gym habit's
+// off-days on a Mon/Wed/Fri schedule) are skipped — they neither extend nor
+// break the streak. Only a scheduled day that was missed (not completed, rested,
+// or skipped) ends it. Without the schedule check the streak broke on the first
+// off-day, capping things like a 3×/week gym habit at ~1.
+const calculateStreak = (habit: Habit) => {
+  const history = habit.history;
+  const restDays = habit.restDays || [];
+  const skippedDays = habit.skippedDays || [];
+  const targetCount = habit.targetCount;
   if (!history || history.length === 0) return 0;
   const dateCounts: Record<string, number> = {};
   history.forEach(d => { dateCounts[d] = (dateCounts[d] || 0) + 1; });
   const completedDates = Object.keys(dateCounts).filter(d => dateCounts[d] >= targetCount);
-  
+
+  // Floor the walk at the habit's creation date so interval habits (whose
+  // pre-startDate days read as "not scheduled") can't loop backward forever.
+  const created = new Date(habit.createdAt);
+  const createdStr = `${created.getFullYear()}-${String(created.getMonth() + 1).padStart(2, '0')}-${String(created.getDate()).padStart(2, '0')}`;
+
   const today = getFormatDateStr(); let checkDate = new Date(); checkDate.setMinutes(checkDate.getMinutes() - checkDate.getTimezoneOffset());
   let streak = 0;
-  if (!completedDates.includes(today) && !restDays.includes(today)) checkDate.setDate(checkDate.getDate() - 1); 
+  if (!completedDates.includes(today) && !restDays.includes(today)) checkDate.setDate(checkDate.getDate() - 1);
 
   while (true) {
     const checkDateStr = checkDate.toISOString().split('T')[0];
-    if (skippedDays.includes(checkDateStr)) break; 
-    if (completedDates.includes(checkDateStr)) { streak++; checkDate.setDate(checkDate.getDate() - 1); } 
-    else if (restDays.includes(checkDateStr)) { checkDate.setDate(checkDate.getDate() - 1); } 
-    else break; 
+    if (checkDateStr < createdStr) break;
+    if (skippedDays.includes(checkDateStr)) break;
+    if (completedDates.includes(checkDateStr)) { streak++; checkDate.setDate(checkDate.getDate() - 1); }
+    else if (restDays.includes(checkDateStr)) { checkDate.setDate(checkDate.getDate() - 1); }
+    else if (!isHabitScheduledOn(habit, checkDateStr)) { checkDate.setDate(checkDate.getDate() - 1); } // off-day: not due, so it can't break the streak
+    else break; // a scheduled day with no completion/rest/skip → streak ends
   }
-  return streak; 
+  return streak;
 };
 
 // Strength Score — implementation lives in `lib/habitScore.ts` so the
@@ -206,6 +240,7 @@ const CustomConfirmModal = ({ visible, title, message, destructiveLabel = "Delet
 
 // ─── SWIPE ACTION RENDERERS (stable — defined outside component, never recreated) ───
 // These receive theme/color via closure-safe props through the Swipeable API.
+// eslint-disable-next-line react/display-name -- Swipeable render callback, not a component
 const makeLeftActions = (theme: any) => (p: any, d: RNAnimated.AnimatedInterpolation<any>) => {
   const s = d.interpolate({ inputRange: [0, 100], outputRange: [0.5, 1], extrapolate: 'clamp' });
   return (
@@ -215,6 +250,7 @@ const makeLeftActions = (theme: any) => (p: any, d: RNAnimated.AnimatedInterpola
   );
 };
 
+// eslint-disable-next-line react/display-name -- Swipeable render callback, not a component
 const makeRightActions = (theme: any, habitId: string, selectedDateStr: string, onAction: any, isFuture: boolean) => () => (
   <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', paddingRight: 10, gap: 10, width: 140, marginBottom: 12, opacity: isFuture ? 0.3 : 1 }}>
     <Pressable onPress={() => { if (isFuture) return; Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); onAction(habitId, 'rest', selectedDateStr); }} style={{ backgroundColor: theme.freeze, padding: 12, borderRadius: 12 }}><Feather name="coffee" size={18} color="#FFF" /></Pressable>
@@ -223,7 +259,7 @@ const makeRightActions = (theme: any, habitId: string, selectedDateStr: string, 
 );
 
 // ─── MEMOIZED HABIT CARD ───
-const HabitCard = React.memo(({ habit, selectedDateStr, todayCount, currentStatus, currentStreak, strengthScore, theme, onToggle, onAction, onOpen, onArchive, onNotePress }: any) => {
+const HabitCard = React.memo(function HabitCard({ habit, selectedDateStr, todayCount, currentStatus, currentStreak, strengthScore, theme, onToggle, onAction, onOpen, onArchive, onNotePress, notesUnlocked }: any) {
   const progress = useSharedValue(0);
   const scale = useSharedValue(1);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -289,8 +325,14 @@ const HabitCard = React.memo(({ habit, selectedDateStr, todayCount, currentStatu
     if (progress.value < 1 && statusRef.current === 'pending') {
       cancelAnimation(progress);
       progress.value = withTiming(0, { duration: 200 });
-      setTimeout(() => { isSweeping.current = false; }, 50);
     }
+    // Always release the sweep lock shortly after a gesture ends, for ANY
+    // status. Previously this only happened in the 'pending' branch, so a
+    // hold-to-undo on a completed/rest/skipped card left isSweeping stuck true
+    // and the NEXT tap couldn't open the detail view ("can't open a completed
+    // habit by tap"). The 50ms delay lets onPress still see the lock for the
+    // gesture that just ended (so an undo-hold doesn't also open the detail).
+    setTimeout(() => { isSweeping.current = false; }, 50);
   }, [progress, scale]);
 
   const handlePress = useCallback(() => {
@@ -355,7 +397,7 @@ const HabitCard = React.memo(({ habit, selectedDateStr, todayCount, currentStatu
                 {currentStatus === 'pending' && habit.targetCount > 1 && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: '#222' }}><Text style={{ fontSize: 10, fontWeight: '800', color: theme.textSub }}>{todayCount} / {habit.targetCount} {habit.unit}</Text></View>}
                 {strengthScore > 0 && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: hexToRgba(strengthScore >= 80 ? habit.color : strengthScore >= 50 ? theme.textSub : theme.danger, 0.15) }}><Text style={{ fontSize: 10, fontWeight: '900', color: strengthScore >= 80 ? habit.color : strengthScore >= 50 ? theme.textSub : theme.danger }}>{strengthScore}%</Text></View>}
                 {habit.hasReminder && currentStatus === 'pending' && <Feather name="bell" size={10} color={theme.textSub} style={{ opacity: 0.4 }} />}
-                {currentStatus === 'done' && (
+                {currentStatus === 'done' && notesUnlocked && onNotePress && (
                   <Pressable onPress={() => onNotePress(habit.id, selectedDateStr)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: habit.completionNotes?.[selectedDateStr] ? hexToRgba(habit.color, 0.15) : hexToRgba(theme.textSub, 0.15) }}>
                     <Feather name={habit.completionNotes?.[selectedDateStr] ? 'file-text' : 'plus'} size={10} color={habit.completionNotes?.[selectedDateStr] ? habit.color : theme.textMain} />
                     <Text style={{ fontSize: 10, fontWeight: '800', color: habit.completionNotes?.[selectedDateStr] ? habit.color : theme.textMain }}>Note</Text>
@@ -399,6 +441,7 @@ const HabitCard = React.memo(({ habit, selectedDateStr, todayCount, currentStatu
     prev.currentStreak === next.currentStreak &&
     prev.strengthScore === next.strengthScore &&
     prev.selectedDateStr === next.selectedDateStr &&
+    prev.notesUnlocked === next.notesUnlocked &&
     prev.theme === next.theme
   );
 });
@@ -408,28 +451,53 @@ export default function HabitsScreen() {
   const insets = useSafeAreaInsets();
   
   const {
-    habits, isDarkMode, calendarType, toggleCalendar,
-    addOrUpdateHabit, deleteHabit, updateHabitStatus, toggleHabitAction,
+    habits, isDarkMode, themeMode, calendarType, toggleCalendar,
+    addOrUpdateHabit, deleteHabit, retireHabit, unretireHabit, updateHabitStatus, toggleHabitAction,
     setHabitCompletionNote, markWhisperSeen,
-    lastEclipseVariation, setLastEclipseVariation,
-    pactAutoNote, setPactAutoNote,
+    lastDayConqueredCelebrated, setLastDayConqueredCelebrated,
+    goForMoreRetired, goForMoreLastShown, recordGoForMoreShown, recordGoForMoreIgnored,
+    weeklyReflections, addWeeklyReflection, addOrUpdateNote, incrementTotalNotesCreated,
   } = useAppStore();
+
+  // ── Progressive unlock gates ──
+  // pact (3 habits) → entry point; completion notes (5 single-habit
+  // completions) → per-completion note field; strength score (first day
+  // conquered) → the % chips + summary display. The vault/archive is NOT
+  // gated — it ships available from day one.
+  const pactUnlocked = useIsUnlocked(FEATURE_IDS.PACT);
+  const completionNotesUnlocked = useIsUnlocked(FEATURE_IDS.COMPLETION_NOTES);
+  const strengthScoreUnlocked = useIsUnlocked(FEATURE_IDS.STRENGTH_SCORE);
+  const weeklyReviewUnlocked = useIsUnlocked(FEATURE_IDS.WEEKLY_REVIEW);
+  const markDotSeen = useAppStore(s => s.markDotSeen);
+  // End-of-week anchor + per-day ratings feed the Weekly Review prompt (the
+  // in-content "close the week" card, shown only during its 30h window).
+  const dayLog = useAppStore(s => s.dayLog);
+  const endOfWeekDay = useAppStore(s => s.endOfWeekDay);
 
   // Active Day Conquered variation — null when nothing is showing
   const [activeEclipse, setActiveEclipse] = useState<EclipseVariationKey | null>(null);
 
   // Strength history modal
   const [showStrengthHistory, setShowStrengthHistory] = useState(false);
+  // Sort order for the per-habit breakdown. Default ascending = weakest first,
+  // so underperforming habits surface on their own (no nagging review needed).
+  const [strengthSortAsc, setStrengthSortAsc] = useState(true);
+  // "Go for more" easter egg surface (experimental, flagged off). engagedRef
+  // tracks whether the user stepped toward it before it auto-faded, so a let-it-
+  // pass correctly counts as an "ignore" toward the 3-strikes retirement.
+  const [goForMoreActive, setGoForMoreActive] = useState(false);
+  const goForMoreEngagedRef = useRef(false);
 
   // Pact history modal
   const [showPactHistory, setShowPactHistory] = useState(false);
 
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  // Habit pending retirement — drives the Keep-or-Vanish prompt.
+  const [retireTarget, setRetireTarget] = useState<Habit | null>(null);
   const [noteModal, setNoteModal] = useState<{ habitId: string; dateStr: string; text: string } | null>(null);
   const [noteDeleteTarget, setNoteDeleteTarget] = useState<{ habitId: string; dateStr: string } | null>(null);
-  const [showWeeklyReview, setShowWeeklyReview] = useState(false);
-  const { lastWeeklyReviewDismissed, setLastWeeklyReviewDismissed, pact, setPact } = useAppStore();
+  const { pact, setPact } = useAppStore();
   const [showPactSetup, setShowPactSetup] = useState(false);
 
   // Clean up old pact schema if present
@@ -437,6 +505,16 @@ export default function HabitsScreen() {
   const [showPactDecision, setShowPactDecision] = useState(false);
   const [pactOutcomeOverride, setPactOutcomeOverride] = useState<'won' | 'lost' | null>(null);
   const [detailHabit, setDetailHabit] = useState<Habit | null>(null);
+  const [showRetired, setShowRetired] = useState(false);
+  // Global settings sheet (rehomed from the Timeline — the surface that
+  // survives the cut; holds end-of-week, weekly reflection, and backup).
+  const [showSettings, setShowSettings] = useState(false);
+  // Weekly Review prompt (in-content "close the week") + its writing sheet.
+  const [weeklyReviewOpen, setWeeklyReviewOpen] = useState(false);
+  const [weeklyReviewDraft, setWeeklyReviewDraft] = useState('');
+  // Which retired card has revealed its hidden "bring back" button (via a long
+  // ~2s hold — deliberately not discoverable by accident).
+  const [bringBackId, setBringBackId] = useState<string | null>(null);
   const [returnToDetail, setReturnToDetail] = useState<string | null>(null);
   const [pactPickHabitId, setPactPickHabitId] = useState<string | null>(null);
 
@@ -460,14 +538,16 @@ export default function HabitsScreen() {
   // Safe Android Back Handler
   useEffect(() => {
     const backAction = () => {
+      if (showSettings) { setShowSettings(false); return true; }
       if (habitModalVisible) { setHabitModalVisible(false); return true; }
       if (vaultIndex >= 0) { vaultSheetRef.current?.dismiss(); return true; }
       if (detailHabit) { setDetailHabit(null); return true; }
+      if (showRetired) { setShowRetired(false); setBringBackId(null); return true; }
       return false;
     };
     const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
     return () => backHandler.remove();
-  }, [habitModalVisible, vaultIndex, detailHabit]);
+  }, [habitModalVisible, vaultIndex, detailHabit, showRetired, showSettings]);
 
   const renderBackdrop = useCallback(
     (props: any) => <BottomSheetBackdrop {...props} disappearsOnIndex={-1} appearsOnIndex={0} opacity={0.6} />,
@@ -476,6 +556,7 @@ export default function HabitsScreen() {
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [newTitle, setNewTitle] = useState('');
+  const [newDescription, setNewDescription] = useState('');
   const [newTargetCount, setNewTargetCount] = useState('1');
   const [newUnit, setNewUnit] = useState('');
   const [newTimeBlock, setNewTimeBlock] = useState<TimeBlock>('morning');
@@ -488,12 +569,37 @@ export default function HabitsScreen() {
   const [newHasReminder, setNewHasReminder] = useState(false);
   const [newReminderTime, setNewReminderTime] = useState('');
 
-  const theme = useMemo(() => ({
-    bg: isDarkMode ? '#000000' : '#F8F9FA', surface: isDarkMode ? '#0A0A0A' : '#FFFFFF', 
-    border: isDarkMode ? '#1A1A1A' : '#E5E5EA', textMain: isDarkMode ? '#FFFFFF' : '#111111', 
-    textSub: isDarkMode ? '#666666' : '#888888', accent: isDarkMode ? '#FFFFFF' : '#000000',
-    danger: '#F43F5E', freeze: '#F59E0B', success: '#10B981'
-  }), [isDarkMode]);
+  // Screen theme = the shared 3-mode palette (light / graphite dark / navy blue).
+  const theme = useMemo(() => getTheme(themeMode), [themeMode]);
+
+  // Same palette, passed to the rehomed-from-Timeline components (IntentPanel /
+  // DayRatingCheckIn / SettingsSheet) — kept as its own name for clarity.
+  const tlTheme = useMemo(() => getTheme(themeMode), [themeMode]);
+
+  // ── Weekly Review window ──────────────────────────────────────────────────
+  // The "close the week" prompt lives in the tab content (not Settings) and is
+  // only due during its 30h window (6pm on the end-of-week day → end of the next
+  // day). Recomputed each render so it flips as the window opens/closes; the
+  // submitted review saves into the Notes tab. weeklyReflections[anchor] records
+  // the close, so the prompt hides once done.
+  const reviewWindow = getWeeklyReviewWindow(endOfWeekDay);
+  // Locked by default — the end-of-week prompt only appears once WEEKLY_REVIEW
+  // is unlocked (3 "how did it go?" day ratings logged in this tab).
+  const weeklyReviewDue = weeklyReviewUnlocked && reviewWindow.open && !weeklyReflections[reviewWindow.anchor];
+  const reviewBreakdown = useMemo(() => {
+    let strong = 0, ok = 0, rough = 0;
+    const [yy, mm, dd] = reviewWindow.anchor.split('-').map(Number);
+    const end = new Date(yy, (mm || 1) - 1, dd || 1);
+    for (let i = 0; i < 7; i++) {
+      const day = new Date(end); day.setDate(end.getDate() - i);
+      const key = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
+      const r = dayLog[key];
+      if (r === 'strong') strong++;
+      else if (r === 'ok') ok++;
+      else if (r === 'rough') rough++;
+    }
+    return { strong, ok, rough };
+  }, [reviewWindow.anchor, dayLog]);
 
   // Debounce ref to avoid notification reschedule on every keystroke
   const notifDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -535,7 +641,7 @@ export default function HabitsScreen() {
         }
 
         // Streak-at-risk check: only nag on habits where there's actually momentum to lose.
-        const streak = calculateStreak(h.history, h.restDays || [], h.skippedDays || [], h.targetCount);
+        const streak = calculateStreak(h);
         if (streak >= 3) atRisk.push({ habit: h, streak });
       }
 
@@ -608,26 +714,16 @@ export default function HabitsScreen() {
 
   // Notification permission verification on tab focus
   const [notifCompromised, setNotifCompromised] = useState(false);
-  // Sunday Weekly Review trigger
-  useFocusEffect(useCallback(() => {
-    const today = new Date();
-    const todayStr = getFormatDateStr();
-    if (today.getDay() === 0 && lastWeeklyReviewDismissed !== todayStr) {
-      if (habits.some(h => h.status === 'active')) {
-        setTimeout(() => setShowWeeklyReview(true), 800);
-      }
-    }
-  }, [habits, lastWeeklyReviewDismissed]));
 
   // Focus-triggered whispers — each key fires exactly ONCE, ever. No per-session repetition.
   useFocusEffect(useCallback(() => {
     const todayStr = getFormatDateStr();
     const activeHabits = habits.filter(h => h.status === 'active');
     if (activeHabits.length === 0) return;
-    const seen = useAppStore.getState().whispersSeen || [];
+    const seen = useAppStore.getState().whispersSeen || {};
 
     const tryFire = (key: string, line: string, delay = 1500) => {
-      if (seen.includes(key)) return false;
+      if (seen[key]) return false;
       markWhisperSeen(key);
       setTimeout(() => showWhisper(line), delay);
       return true;
@@ -694,13 +790,13 @@ export default function HabitsScreen() {
   const openSheet = useCallback((habit?: Habit) => {
     Keyboard.dismiss();
     if (habit) {
-      setEditingId(habit.id); setNewTitle(habit.title); setNewColor(habit.color); setNewIcon(habit.icon);
+      setEditingId(habit.id); setNewTitle(habit.title); setNewDescription(habit.description || ''); setNewColor(habit.color); setNewIcon(habit.icon);
       setNewTargetCount(habit.targetCount.toString()); setNewUnit(habit.unit || ''); setNewTimeBlock(habit.timeBlock);
       setNewScheduleType(habit.scheduleType || 'days'); setNewFrequency(habit.frequency || []);
       setNewIntervalDays(habit.intervalDays?.toString() || '2'); setNewStartDate(habit.startDate || getFormatDateStr());
       setNewHasReminder(habit.hasReminder || false); setNewReminderTime(habit.reminderTime || '');
     } else {
-      setEditingId(null); setNewTitle(''); setNewTargetCount('1'); setNewUnit(''); setNewTimeBlock('morning');
+      setEditingId(null); setNewTitle(''); setNewDescription(''); setNewTargetCount('1'); setNewUnit(''); setNewTimeBlock('morning');
       setNewScheduleType('days'); setNewFrequency(UI_DAYS); setNewIntervalDays('2'); setNewStartDate(getFormatDateStr());
       setNewHasReminder(false); setNewReminderTime('');
     }
@@ -727,35 +823,42 @@ export default function HabitsScreen() {
     // Always read the current snapshot from the store — avoids stale closure bug
     const existing = editingId ? useAppStore.getState().habits.find((h: Habit) => h.id === editingId) : null;
     const newHabit: Habit = {
-      id: editingId || Date.now().toString(), 
+      id: editingId || Date.now().toString(),
       title: newTitle.trim(), color: newColor, icon: newIcon, timeBlock: newTimeBlock,
-      targetCount: Math.max(1, parseInt(newTargetCount) || 1), 
-      unit: newUnit.trim(), 
-      scheduleType: newScheduleType, 
+      description: newDescription.trim() || undefined,
+      targetCount: Math.max(1, parseInt(newTargetCount) || 1),
+      unit: newUnit.trim(),
+      scheduleType: newScheduleType,
       frequency: newScheduleType === 'days' ? newFrequency : [],
-      intervalDays: newScheduleType === 'interval' ? Math.max(1, parseInt(newIntervalDays) || 1) : undefined, 
+      intervalDays: newScheduleType === 'interval' ? Math.max(1, parseInt(newIntervalDays) || 1) : undefined,
       startDate: newScheduleType === 'interval' ? newStartDate : undefined,
-      hasReminder: newHasReminder, 
+      hasReminder: newHasReminder,
       reminderTime: newHasReminder ? parseTimeString(newReminderTime) : '',
-      history: existing?.history || [], 
+      history: existing?.history || [],
       restDays: existing?.restDays || [],
-      skippedDays: existing?.skippedDays || [], 
+      skippedDays: existing?.skippedDays || [],
       createdAt: existing?.createdAt || Date.now(),
+      // addOrUpdateHabit fully replaces the record, so carry forward fields the
+      // editor doesn't manage — without this, editing a habit wiped its
+      // per-completion notes.
+      completionNotes: existing?.completionNotes,
       status: 'active',
     };
     addOrUpdateHabit(newHabit);
+    // Monotonic unlock counter — only fresh habits tick it (PACT + VAULT at >=3).
+    if (!editingId) useAppStore.getState().incrementTotalHabitsCreated();
     closeSheet();
     // First-habit onboarding whisper — fires exactly once ever when user creates their first habit
     if (!editingId) {
       const allHabits = useAppStore.getState().habits;
-      const seen = useAppStore.getState().whispersSeen || [];
-      if (allHabits.length <= 1 && !seen.includes('first_habit')) {
+      const seen = useAppStore.getState().whispersSeen || {};
+      if (allHabits.length <= 1 && !seen['first_habit']) {
         markWhisperSeen('first_habit');
         setTimeout(() => showWhisper("One habit. That's how everything starts."), 800);
       }
     }
   }, [
-    newTitle, newColor, newIcon, newTimeBlock, newTargetCount, newUnit,
+    newTitle, newDescription, newColor, newIcon, newTimeBlock, newTargetCount, newUnit,
     newScheduleType, newFrequency, newIntervalDays, newStartDate,
     newHasReminder, newReminderTime, editingId, addOrUpdateHabit, closeSheet,
     markWhisperSeen, showWhisper,
@@ -765,6 +868,32 @@ export default function HabitsScreen() {
   // Stable date string — only recomputes when selectedDate actually changes
   const selectedDateStr = useMemo(() => getFormatDateStr(selectedDate), [selectedDate]);
   const selectedJsDayName = useMemo(() => JS_DAYS[selectedDate.getDay()], [selectedDate]);
+
+  // ── Day rollover ──────────────────────────────────────────────────────────
+  // selectedDate is captured once at mount and only changes on a chip tap, so
+  // it goes stale the moment the user's clock crosses local midnight while the
+  // app sits open or backgrounded. A stale day makes isAllDone's TODAY-only
+  // guard fail — so completing the last habit after midnight wouldn't fire the
+  // day-conquered celebration. Re-sync to today on focus, on app foreground,
+  // and at the next local midnight — but ONLY while the user is tracking
+  // "today" (never yank them off a past/future day they deliberately selected).
+  const viewingTodayRef = useRef(true);
+  const rollToTodayIfTracking = useCallback(() => {
+    if (!viewingTodayRef.current) return;
+    if (getFormatDateStr(selectedDate) !== getFormatDateStr()) setSelectedDate(new Date());
+  }, [selectedDate]);
+  useFocusEffect(useCallback(() => {
+    rollToTodayIfTracking();
+    // Catch the rollover even if the tab stays open across midnight.
+    const now = new Date();
+    const nextMidnight = new Date(now); nextMidnight.setHours(24, 0, 5, 0); // ~5s past local midnight
+    const t = setTimeout(rollToTodayIfTracking, Math.max(1000, nextMidnight.getTime() - now.getTime()));
+    return () => clearTimeout(t);
+  }, [rollToTodayIfTracking]));
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (s) => { if (s === 'active') rollToTodayIfTracking(); });
+    return () => sub.remove();
+  }, [rollToTodayIfTracking]);
 
   const weekWindow = useMemo(() => {
     const today = new Date();
@@ -789,6 +918,10 @@ export default function HabitsScreen() {
 
   const scheduledHabits = useMemo(() => habits.filter((h: Habit) => {
     if (h.status !== 'active') return false;
+    // A habit only exists from its creation day forward — a freshly-made habit
+    // shouldn't appear on past dates in the window (mirrors the createdAt guard
+    // in wasDayConquered). Future dates are fine.
+    if (getFormatDateStr(new Date(h.createdAt)) > selectedDateStr) return false;
     if (h.scheduleType === 'interval') {
        if (!h.startDate) return false;
        const diff = diffInDays(h.startDate, selectedDateStr); return diff >= 0 && diff % (h.intervalDays || 1) === 0;
@@ -818,7 +951,7 @@ export default function HabitsScreen() {
           if (h.skippedDays?.includes(selectedDateStr)) currentStatus = 'skipped';
           else if (h.restDays?.includes(selectedDateStr)) currentStatus = 'rest';
           else if (todayCount >= h.targetCount) currentStatus = 'done';
-          const currentStreak = calculateStreak(h.history, h.restDays || [], h.skippedDays || [], h.targetCount);
+          const currentStreak = calculateStreak(h);
           const strengthScore = calculateStrengthScore(h, selectedDateStr);
 
           data.push({ type: 'habit', id: h.id, habit: h, todayCount, currentStatus, currentStreak, strengthScore });
@@ -834,6 +967,13 @@ export default function HabitsScreen() {
   const vaultItems = useMemo(
     () => habits.filter((h: Habit) => vaultTab === 'archived' ? h.status === 'archived' : h.status === 'active'),
     [habits, vaultTab]
+  );
+
+  // Retired habits kept as trophies (vanished ones are excluded — they still
+  // count in the grade but the user chose not to memorialize them).
+  const retiredHabits = useMemo(
+    () => habits.filter((h: Habit) => h.status === 'retired' && !h.vanished),
+    [habits]
   );
 
   // ─── THE ECLIPSE LOGIC ───
@@ -852,8 +992,12 @@ export default function HabitsScreen() {
   }, [scheduledHabits, selectedDateStr]);
 
   useEffect(() => {
-    if (isAllDone && !prevIsAllDone.current && eclipseFiredForDate.current !== selectedDateStr) {
+    // Fire once per calendar day. The in-memory ref guards within a session;
+    // lastDayConqueredCelebrated (persisted) guards across remounts/restarts so
+    // reopening the tab on an already-conquered day doesn't replay the eclipse.
+    if (isAllDone && eclipseFiredForDate.current !== selectedDateStr && lastDayConqueredCelebrated !== selectedDateStr) {
       eclipseFiredForDate.current = selectedDateStr;
+      setLastDayConqueredCelebrated(selectedDateStr);
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
       setTimeout(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Soft), 1000);
 
@@ -942,10 +1086,38 @@ export default function HabitsScreen() {
         completesPactToday,
       });
       setActiveEclipse(pick);
-      setLastEclipseVariation(pick);
+
+      // ── "Go for more" easter egg (experimental, flagged off) ──
+      // Only rolls when the day is conquered BEFORE 4pm (hard), then a low
+      // chance (mysterious), at most once/day, and never if it's been retired
+      // after 3 ignores. Surfaces after the eclipse settles so the two moments
+      // don't collide.
+      if (
+        GO_FOR_MORE_ENABLED &&
+        !goForMoreRetired &&
+        goForMoreLastShown !== selectedDateStr &&
+        new Date().getHours() < GO_FOR_MORE_BEFORE_HOUR &&
+        Math.random() < GO_FOR_MORE_CHANCE
+      ) {
+        recordGoForMoreShown(selectedDateStr);
+        goForMoreEngagedRef.current = false;
+        setTimeout(() => setGoForMoreActive(true), 3200);
+      }
     }
     prevIsAllDone.current = isAllDone;
-  }, [isAllDone, habits, pact, lastEclipseVariation, setLastEclipseVariation]);
+  }, [isAllDone, habits, pact, selectedDateStr, lastDayConqueredCelebrated, setLastDayConqueredCelebrated, goForMoreRetired, goForMoreLastShown, recordGoForMoreShown]);
+
+  // Auto-fade the "go for more" moment. If it's let to pass (not engaged), that
+  // counts as an ignore toward the 3-strikes retirement. Engaging closes the
+  // modal first, so this cleanup clears the timer and no ignore is recorded.
+  useEffect(() => {
+    if (!goForMoreActive) return;
+    const t = setTimeout(() => {
+      if (!goForMoreEngagedRef.current) recordGoForMoreIgnored();
+      setGoForMoreActive(false);
+    }, 5000);
+    return () => clearTimeout(t);
+  }, [goForMoreActive, recordGoForMoreIgnored]);
 
   const eclipseUiShift = useAnimatedStyle(() => ({
     opacity: interpolate(eclipseProgress.value, [0, 0.6], [1, 0], Extrapolation.CLAMP),
@@ -970,8 +1142,8 @@ export default function HabitsScreen() {
         const sorted = [...h.history].sort().reverse();
         const lastDone = sorted[0];
         if (lastDone && diffInDays(lastDone, dateStr) >= 3) {
-          const seen = useAppStore.getState().whispersSeen || [];
-          if (!seen.includes('recovery')) {
+          const seen = useAppStore.getState().whispersSeen || {};
+          if (!seen['recovery']) {
             markWhisperSeen('recovery');
             setTimeout(() => showWhisper("You missed. You returned. The record continues."), 1000);
           }
@@ -979,8 +1151,8 @@ export default function HabitsScreen() {
         // Past-completion whisper — fires exactly once ever
         const gap = diffInDays(dateStr, todayStr);
         if (gap >= 1 && gap <= 3) {
-          const seen = useAppStore.getState().whispersSeen || [];
-          if (!seen.includes('past_completion')) {
+          const seen = useAppStore.getState().whispersSeen || {};
+          if (!seen['past_completion']) {
             markWhisperSeen('past_completion');
             setTimeout(() => showWhisper("The past was rewritten. The system permits this."), 1000);
           }
@@ -1071,16 +1243,21 @@ export default function HabitsScreen() {
         todayCount={item.todayCount}
         currentStatus={item.currentStatus}
         currentStreak={item.currentStreak}
-        strengthScore={item.strengthScore}
+        // Strength % chip is gated by passing 0 when locked — the card
+        // already hides the chip at 0, so no extra prop needed.
+        strengthScore={strengthScoreUnlocked ? item.strengthScore : 0}
         theme={theme}
         onToggle={handleHabitAction}
         onAction={handleHabitAction}
         onOpen={handleOpenDetail}
         onArchive={updateHabitStatus}
-        onNotePress={handleNotePress}
+        // Completion-note button is gated by passing undefined when locked;
+        // the card only renders the Note pressable when onNotePress exists.
+        onNotePress={completionNotesUnlocked ? handleNotePress : undefined}
+        notesUnlocked={completionNotesUnlocked}
       />
     );
-  }, [selectedDateStr, theme, handleHabitAction, handleOpenDetail, updateHabitStatus, handleNotePress]);
+  }, [selectedDateStr, theme, handleHabitAction, handleOpenDetail, updateHabitStatus, handleNotePress, strengthScoreUnlocked, completionNotesUnlocked]);
 
   const getTodayLabel = useCallback(() => {
     const dayName = FULL_DAYS[selectedDate.getDay()];
@@ -1089,12 +1266,16 @@ export default function HabitsScreen() {
   }, [selectedDate, calendarType]);
 
   const globalStrength = useMemo(() => {
-    const active = habits.filter(h => h.status === 'active');
-    if (active.length === 0) return null;
+    // The ONE grade number. Active (live) + retired (frozen) both count — same
+    // set the chart modal uses — so the header score and the chart score can
+    // never disagree. Archived (long-paused) is excluded until it returns.
+    const counted = habits.filter(h => h.status === 'active' || h.status === 'retired');
+    if (counted.length === 0) return null;
     const todayStr = getFormatDateStr();
-    const scores = active.map(h => calculateStrengthScore(h, todayStr));
+    const scores = counted.map(h => calculateStrengthScore(h, todayStr));
     return Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
   }, [habits]);
+
 
   // ── Pact logic ──
   // Tier system: 1=easy (~50% of weekly schedule), 2=medium (~75%), 3=hard (100%)
@@ -1216,36 +1397,19 @@ export default function HabitsScreen() {
       setShowPactDecision(false);
       showWhisper("Same directive. New window.");
     } else if (choice === 'retry') {
-      // Auto-create failure note (gated by user preference, default on)
-      const { addOrUpdateNote, pactAutoNote: autoNoteOn } = useAppStore.getState();
-      if (autoNoteOn !== false) {
-        const progressLines = pactStatus?.habitProgress.map(hp => `- ${hp.title}: ${hp.completed}/${hp.required}${hp.completed >= hp.required ? ' ✓' : ''}`) || [];
-        const failNote: Note = {
-          id: `pact_fail_${Date.now()}`, title: `Pact Level ${pact.level} — Failed`, group: 'pact',
-          content: `# Progress at deadline\n${progressLines.join('\n')}\n\nDeadline: ${pact.deadline}\nStarted: ${pact.startedAt}`,
-          color: '#F43F5E', createdAt: Date.now(), isPinned: false, isLocked: false, order: -Date.now(), status: 'active',
-        };
-        addOrUpdateNote(failNote);
-      }
+      // The failed-pact history entry (snapshotPact + pact.history above) is
+      // the canonical record; we used to also auto-create a Notes entry here
+      // but it muddied the line between "user's private workspace" and "system
+      // event log." History stays in the Pact card.
       const deadline = calculatePactDeadline(pact.habits);
       setPact({ ...pact, startedAt: todayStr, deadline, history });
       setShowPactDecision(false);
       pactDecisionShown.current = false;
       showWhisper("Same target. Deadline reset.");
     } else if (choice === 'scale_back') {
-      // Auto-create failure note
-      if (pactStatus?.isExpired) {
-        const { addOrUpdateNote, pactAutoNote: autoNoteOn } = useAppStore.getState();
-        if (autoNoteOn !== false) {
-          const progressLines = pactStatus?.habitProgress.map(hp => `- ${hp.title}: ${hp.completed}/${hp.required}${hp.completed >= hp.required ? ' ✓' : ''}`) || [];
-          const failNote: Note = {
-            id: `pact_fail_${Date.now()}`, title: `Pact Level ${pact.level} — Scaled Back`, group: 'pact',
-            content: `# Progress at deadline\n${progressLines.join('\n')}\n\nDeadline: ${pact.deadline}\nStarted: ${pact.startedAt}`,
-            color: '#F43F5E', createdAt: Date.now(), isPinned: false, isLocked: false, order: -Date.now(), status: 'active',
-          };
-          addOrUpdateNote(failNote);
-        }
-      }
+      // Same as the retry branch above: the Pact history entry IS the record;
+      // we no longer mirror it into Notes (Notes is for the user's words, not
+      // the system's log of them).
       if (pact.habits.length <= 1) {
         // Check if we can just drop a tier
         if (pact.habits[0].tier > 1) {
@@ -1317,6 +1481,9 @@ export default function HabitsScreen() {
   // Memoized date selection handler
   const handleDateSelect = useCallback((date: Date) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    // Track whether the user is sitting on "today" so the midnight rollover
+    // only auto-advances when they haven't deliberately picked another day.
+    viewingTodayRef.current = getFormatDateStr(date) === getFormatDateStr();
     setSelectedDate(date);
   }, []);
 
@@ -1340,6 +1507,27 @@ export default function HabitsScreen() {
             </View>
           </Modal>
 
+          {/* "GO FOR MORE" — secret early-finish moment (EXPERIMENTAL, ships off).
+              A faint, wordless-feeling system line. Step toward it to engage
+              (reward TBD — deferred placeholder); let it fade and it counts as an
+              ignore (3 → gone forever). */}
+          <Modal visible={goForMoreActive} transparent animationType="fade" statusBarTranslucent onRequestClose={() => { if (!goForMoreEngagedRef.current) recordGoForMoreIgnored(); setGoForMoreActive(false); }}>
+            <Pressable
+              style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'center', alignItems: 'center' }}
+              onPress={() => {
+                goForMoreEngagedRef.current = true;
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                setGoForMoreActive(false);
+                // TODO: reward payload (diary tie-in) — intentionally a no-op
+                // placeholder for now; the whole feature ships off in beta.
+              }}
+            >
+              <Animated.View entering={FadeIn.duration(1600)} exiting={FadeOut.duration(900)}>
+                <Text style={{ color: theme.textMain, fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace', fontSize: 13, letterSpacing: 3, opacity: 0.5, textAlign: 'center' }}>the day bent early</Text>
+              </Animated.View>
+            </Pressable>
+          </Modal>
+
           {/* MAIN UI (WRAPPED IN ECLIPSE SHIFT) */}
           <Animated.View style={[{ flex: 1 }, eclipseUiShift]}>
             <View style={{ paddingHorizontal: 24, paddingTop: 30, paddingBottom: 15, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -1350,7 +1538,7 @@ export default function HabitsScreen() {
                   <TouchableOpacity onPress={toggleCalendar} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
                     <Text style={{ fontSize: 9, color: theme.textSub, opacity: 0.5, fontWeight: '900', letterSpacing: 0.5 }}>• {calendarType.toUpperCase()}</Text>
                   </TouchableOpacity>
-                  {globalStrength !== null && (
+                  {globalStrength !== null && strengthScoreUnlocked && (
                     <TouchableOpacity onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setShowStrengthHistory(true); }} hitSlop={10} style={{ paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, backgroundColor: hexToRgba(globalStrength >= 80 ? '#10B981' : globalStrength >= 50 ? theme.textSub : theme.danger, 0.15) }}>
                       <Text style={{ fontSize: 10, fontWeight: '900', color: globalStrength >= 80 ? '#10B981' : globalStrength >= 50 ? theme.textSub : theme.danger }}>{globalStrength}%</Text>
                     </TouchableOpacity>
@@ -1358,6 +1546,20 @@ export default function HabitsScreen() {
                 </View>
               </View>
               <View style={{ flexDirection: 'row', gap: 16, alignItems: 'center' }}>
+                {/* Settings — rehomed from the Timeline (now the app's only Settings entry). */}
+                <TouchableOpacity onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setShowSettings(true); }} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
+                  <Feather name="settings" size={20} color={theme.textMain} />
+                </TouchableOpacity>
+                {/* Retired (trophies) — only once you've retired something. */}
+                {retiredHabits.length > 0 && (
+                  <TouchableOpacity onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setShowRetired(true); }} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                      <Feather name="award" size={20} color={theme.textMain} />
+                      <Text style={{ color: theme.textSub, fontSize: 11, fontWeight: '700', opacity: 0.5, fontVariant: ['tabular-nums'] }}>{retiredHabits.length}</Text>
+                    </View>
+                  </TouchableOpacity>
+                )}
+                {/* Vault/archive — always available (ungated). */}
                 <TouchableOpacity onPress={openVault} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                     <Feather name="archive" size={20} color={theme.textMain} />
@@ -1421,6 +1623,37 @@ export default function HabitsScreen() {
                       })}
                     </View>
 
+                    {/* WEEKLY REVIEW — "close the week", in-content during its 30h
+                        window (6pm end-of-week day → end of next day). Tapping
+                        opens the writing sheet; the saved review lands in Notes.
+                        (Replaced the old "This Week" progress bar.) */}
+                    {weeklyReviewDue && (
+                      <TouchableOpacity
+                        onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setWeeklyReviewDraft(weeklyReflections[reviewWindow.anchor]?.text ?? ''); setWeeklyReviewOpen(true); }}
+                        activeOpacity={0.85}
+                        style={{ marginBottom: 16, borderRadius: 16, padding: 16, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.freeze + '55' }}
+                      >
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                          <Text style={{ color: theme.textMain, fontSize: 14, fontWeight: '900', letterSpacing: -0.2 }}>Close the week</Text>
+                          <Feather name="feather" size={16} color={theme.freeze} />
+                        </View>
+                        <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '600', lineHeight: 17 }}>
+                          {reviewBreakdown.strong} Strong · {reviewBreakdown.ok} Steady · {reviewBreakdown.rough} Off. A few sentences — it saves to your Notes.
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+
+                    {/* INTENT — "what is today for?", rehomed from the Timeline.
+                        Sits right under the day strip so picking a day shows that
+                        day's intent; today/tomorrow are editable, past is a mirror. */}
+                    <IntentPanel
+                      theme={tlTheme}
+                      isDarkMode={isDarkMode}
+                      selectedDateStr={selectedDateStr}
+                      todayStr={getFormatDateStr()}
+                      insetsBottom={insets.bottom}
+                    />
+
                     {pactStatus ? (
                       <View style={{ marginBottom: 16, borderRadius: 16, backgroundColor: theme.surface, borderWidth: 1, borderColor: pactStatus.allDone ? theme.success + '40' : pactStatus.isExpired ? theme.danger + '40' : theme.border, overflow: 'hidden' }}>
                         <TouchableOpacity onPress={() => { pactDecisionShown.current = false; setPactOutcomeOverride(pactStatus.allDone ? 'won' : pactStatus.isExpired ? 'lost' : null); setShowPactDecision(true); }} activeOpacity={0.8} style={{ padding: 16 }}>
@@ -1451,16 +1684,104 @@ export default function HabitsScreen() {
                           })}
                         </TouchableOpacity>
                       </View>
-                    ) : habits.some(h => h.status === 'active') ? (
-                      <TouchableOpacity onPress={() => setShowPactSetup(true)} style={{ marginBottom: 16, paddingVertical: 14, paddingHorizontal: 16, borderRadius: 14, borderWidth: 1, borderColor: theme.border, borderStyle: 'dashed', alignItems: 'center' }}>
-                        <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '700' }}>Start The Pact — build habits one at a time</Text>
-                      </TouchableOpacity>
+                    ) : (pactUnlocked && habits.some(h => h.status === 'active')) ? (
+                      // Pact entry gated on PACT (3 habits). Absent until then.
+                      <Animated.View entering={FadeIn.duration(300)}>
+                        <TouchableOpacity onPress={() => setShowPactSetup(true)} style={{ marginBottom: 16, paddingVertical: 14, paddingHorizontal: 16, borderRadius: 14, borderWidth: 1, borderColor: theme.border, borderStyle: 'dashed', alignItems: 'center' }}>
+                          <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '700' }}>Start The Pact — build habits one at a time</Text>
+                        </TouchableOpacity>
+                      </Animated.View>
                     ) : null}
                   </>
+                }
+                ListFooterComponent={
+                  // Day rating — the end-of-day check-in, rehomed from the
+                  // Timeline. A footer so it reads as the day's closing bookend,
+                  // after the habits. Today only (you rate the day you're in).
+                  selectedDateStr === getFormatDateStr() ? (
+                    <View style={{ marginTop: 28 }}>
+                      <DayRatingCheckIn theme={tlTheme} isDarkMode={isDarkMode} todayStr={getFormatDateStr()} />
+                    </View>
+                  ) : null
                 }
               />
             </View>
           </Animated.View>
+
+          {/* GLOBAL SETTINGS — rehomed from the Timeline. */}
+          <SettingsSheet
+            visible={showSettings}
+            onClose={() => setShowSettings(false)}
+            theme={tlTheme}
+            insetsBottom={insets.bottom}
+          />
+
+          {/* ── WEEKLY REVIEW SHEET ── the "close the week" writing surface,
+              opened from the in-content prompt above. The breakdown is the
+              ratings the user already gave; the text is optional. On save it's
+              written into the Notes tab AND recorded so the prompt hides. */}
+          <Modal visible={weeklyReviewOpen} transparent animationType="slide" onRequestClose={() => setWeeklyReviewOpen(false)}>
+            <KeyboardAvoidingView behavior="padding" style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.65)', justifyContent: 'flex-end' }}>
+              <TouchableOpacity style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }} activeOpacity={1} onPress={() => setWeeklyReviewOpen(false)} />
+              <View style={{ backgroundColor: theme.surface, borderTopLeftRadius: 32, borderTopRightRadius: 32, paddingTop: 16, paddingBottom: Math.max(insets.bottom, 12) + 16, paddingHorizontal: 24 }}>
+                <View style={{ width: 40, height: 5, borderRadius: 3, backgroundColor: theme.border, alignSelf: 'center', marginBottom: 18 }} />
+                <Text style={{ color: theme.textMain, fontSize: 24, fontWeight: '900', letterSpacing: -0.6, marginBottom: 6 }}>Close the week.</Text>
+                <Text style={{ color: theme.textSub, fontSize: 13, fontWeight: '600', marginBottom: 18 }}>
+                  {reviewBreakdown.strong} Strong, {reviewBreakdown.ok} Steady, {reviewBreakdown.rough} Off. How do you think the week was?
+                </Text>
+                <TextInput
+                  value={weeklyReviewDraft}
+                  onChangeText={setWeeklyReviewDraft}
+                  placeholder="A few sentences. What landed, what didn't."
+                  placeholderTextColor={theme.textSub}
+                  multiline
+                  autoFocus
+                  style={[{
+                    backgroundColor: theme.bg, color: theme.textMain, padding: 14, borderRadius: 12,
+                    minHeight: 120, fontSize: 15, fontWeight: '500', lineHeight: 21,
+                    textAlignVertical: 'top', marginBottom: 12, borderWidth: 1, borderColor: theme.border,
+                  }, persianSafeInputStyle, rtlInputStyle(weeklyReviewDraft)]}
+                />
+                <View style={{ flexDirection: 'row', gap: 10 }}>
+                  <TouchableOpacity onPress={() => setWeeklyReviewOpen(false)} style={{ flex: 1, paddingVertical: 14, borderRadius: 12, borderWidth: 1, borderColor: theme.border, alignItems: 'center' }}>
+                    <Text style={{ color: theme.textSub, fontSize: 13, fontWeight: '800' }}>Later</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => {
+                      const text = weeklyReviewDraft.trim();
+                      const anchor = reviewWindow.anchor;
+                      // Save the review into the Notes tab as a regular note.
+                      const note: Note = {
+                        id: `wr_${anchor}`,
+                        title: `Weekly review — week ending ${anchor}`,
+                        // Tag every auto-saved review with a shared group so they
+                        // surface a chip on the card and cluster under one filter
+                        // ("Weekly Review") in the Notes tab.
+                        group: 'weekly review',
+                        content: `${reviewBreakdown.strong} Strong · ${reviewBreakdown.ok} Steady · ${reviewBreakdown.rough} Off\n\n${text}`,
+                        color: '#82AAFF',
+                        createdAt: Date.now(),
+                        isPinned: false,
+                        isLocked: false,
+                        order: -Date.now(),
+                        status: 'active',
+                      };
+                      addOrUpdateNote(note);
+                      incrementTotalNotesCreated();
+                      // Record the close so the prompt hides + survives reloads.
+                      addWeeklyReflection({ id: anchor, weekKey: anchor, endedOn: anchor, text, createdAt: Date.now() });
+                      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                      setWeeklyReviewDraft('');
+                      setWeeklyReviewOpen(false);
+                    }}
+                    style={{ flex: 2, paddingVertical: 14, borderRadius: 12, backgroundColor: theme.textMain, alignItems: 'center' }}
+                  >
+                    <Text style={{ color: theme.bg, fontSize: 13, fontWeight: '900', letterSpacing: 0.3 }}>Save to Notes</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </KeyboardAvoidingView>
+          </Modal>
 
           {/* DELETE MODAL */}
           {deleteConfirmId && (
@@ -1478,8 +1799,40 @@ export default function HabitsScreen() {
                   deleteHabit(deleteConfirmId); closeSheet();
                 }
                 setDeleteConfirmId(null);
-              }} 
+              }}
             />
+          )}
+
+          {/* RETIRE MODAL — honor a finished habit. Both choices keep its frozen
+              score in the grade; the choice is only whether to memorialize it on
+              the Retired screen ("Keep") or quietly set it down ("Vanish"). */}
+          {retireTarget && (
+            <Modal visible transparent animationType="fade" onRequestClose={() => setRetireTarget(null)}>
+              <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center', padding: 24 }}>
+                <View style={{ backgroundColor: theme.surface, width: '100%', maxWidth: 360, borderRadius: 24, padding: 24, borderWidth: 1, borderColor: theme.border }}>
+                  <View style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: hexToRgba(retireTarget.color, 0.15), justifyContent: 'center', alignItems: 'center', marginBottom: 16 }}>
+                    <Feather name="award" size={24} color={retireTarget.color} />
+                  </View>
+                  <Text style={{ color: theme.textMain, fontSize: 20, fontWeight: '900', marginBottom: 8 }}>Retire this habit?</Text>
+                  <Text style={{ color: theme.textSub, fontSize: 14, lineHeight: 22, marginBottom: 22 }}>It leaves your active list, but the strength it earned stays in your grade — that effort happened. Keep it as a trophy, or set it down quietly.</Text>
+                  <TouchableOpacity
+                    onPress={() => { const id = retireTarget.id; setRetireTarget(null); setDetailHabit(null); retireHabit(id, true, getFormatDateStr()); Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); }}
+                    style={{ paddingVertical: 14, borderRadius: 12, alignItems: 'center', backgroundColor: retireTarget.color, marginBottom: 10 }}
+                  >
+                    <Text style={{ color: '#FFF', fontWeight: '900', fontSize: 14 }}>Keep as a trophy</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => { const id = retireTarget.id; setRetireTarget(null); setDetailHabit(null); retireHabit(id, false, getFormatDateStr()); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); }}
+                    style={{ paddingVertical: 14, borderRadius: 12, alignItems: 'center', backgroundColor: theme.bg, borderWidth: 1, borderColor: theme.border, marginBottom: 10 }}
+                  >
+                    <Text style={{ color: theme.textMain, fontWeight: '800', fontSize: 14 }}>Vanish it</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => setRetireTarget(null)} style={{ paddingVertical: 10, alignItems: 'center' }}>
+                    <Text style={{ color: theme.textSub, fontWeight: '700', fontSize: 13 }}>Cancel</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </Modal>
           )}
 
           {/* ── STRENGTH HISTORY MODAL ── */}
@@ -1487,11 +1840,17 @@ export default function HabitsScreen() {
             <Pressable onPress={() => setShowStrengthHistory(false)} style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' }}>
               <Pressable onPress={() => {}} style={{ backgroundColor: theme.surface, borderTopLeftRadius: 32, borderTopRightRadius: 32, paddingTop: 28, paddingBottom: 48, paddingHorizontal: 28, minHeight: '62%' }}>
                 {(() => {
+                  // Mirror calculateGlobalStrength: active (live scores) + retired
+                  // (frozen) both count toward the grade; archived (long-paused)
+                  // is excluded until it returns. This keeps the modal's number
+                  // consistent with the header grade chip.
                   const active = habits.filter(h => h.status === 'active');
-                  if (active.length === 0) {
+                  const retired = habits.filter(h => h.status === 'retired');
+                  const counted = [...active, ...retired];
+                  if (counted.length === 0) {
                     return (
                       <View style={{ alignItems: 'center', paddingVertical: 40 }}>
-                        <Text style={{ color: theme.textSub, fontSize: 14, fontWeight: '600' }}>No active habits.</Text>
+                        <Text style={{ color: theme.textSub, fontSize: 14, fontWeight: '600' }}>No habits yet.</Text>
                       </View>
                     );
                   }
@@ -1503,7 +1862,7 @@ export default function HabitsScreen() {
                     const d = new Date(today);
                     d.setDate(today.getDate() - i);
                     const dStr = getFormatDateStr(d);
-                    const scores = active
+                    const scores = counted
                       .filter(h => new Date(h.createdAt) <= d)
                       .map(h => calculateStrengthScore(h, dStr));
                     const avg = scores.length === 0 ? 0 : Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
@@ -1545,24 +1904,56 @@ export default function HabitsScreen() {
                         <Text style={{ fontSize: 10, color: theme.textSub, opacity: 0.5, fontWeight: '700' }}>today</Text>
                       </View>
 
-                      {/* Per-habit breakdown — show each habit's current score */}
-                      <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 2, textTransform: 'uppercase', marginBottom: 12 }}>By habit</Text>
-                      <View style={{ gap: 10 }}>
-                        {active.map(h => {
-                          const s = calculateStrengthScore(h, getFormatDateStr());
-                          const c = s >= 80 ? h.color : s >= 50 ? theme.textSub : theme.danger;
-                          return (
-                            <View key={h.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-                              <Feather name={h.icon} size={14} color={h.color} />
-                              <Text style={{ flex: 1, color: theme.textMain, fontSize: 13, fontWeight: '700' }} numberOfLines={1}>{h.title}</Text>
-                              <View style={{ width: 80, height: 4, borderRadius: 2, backgroundColor: theme.border, overflow: 'hidden' }}>
-                                <View style={{ width: `${s}%`, height: '100%', backgroundColor: c }} />
-                              </View>
-                              <Text style={{ color: c, fontSize: 12, fontWeight: '900', minWidth: 36, textAlign: 'right' }}>{s}%</Text>
+                      {/* Per-habit breakdown — sortable, so weak habits surface
+                          on their own (this replaced the nagging weekly review). */}
+                      {(() => {
+                        const scoredHabits = active
+                          .map(h => ({ h, s: calculateStrengthScore(h, getFormatDateStr()) }))
+                          .sort((a, b) => strengthSortAsc ? a.s - b.s : b.s - a.s);
+                        return (
+                          <>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                              <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 2, textTransform: 'uppercase' }}>By habit</Text>
+                              <TouchableOpacity onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setStrengthSortAsc(v => !v); }} hitSlop={10} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                                <Feather name={strengthSortAsc ? 'arrow-up' : 'arrow-down'} size={11} color={theme.textSub} />
+                                <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '800', letterSpacing: 0.3 }}>{strengthSortAsc ? 'Lowest first' : 'Highest first'}</Text>
+                              </TouchableOpacity>
                             </View>
-                          );
-                        })}
-                      </View>
+                            <View style={{ gap: 10 }}>
+                              {scoredHabits.map(({ h, s }) => {
+                                const c = s >= 80 ? h.color : s >= 50 ? theme.textSub : theme.danger;
+                                return (
+                                  <View key={h.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                                    <Feather name={h.icon} size={14} color={h.color} />
+                                    <Text style={{ flex: 1, color: theme.textMain, fontSize: 13, fontWeight: '700' }} numberOfLines={1}>{h.title}</Text>
+                                    <View style={{ width: 80, height: 4, borderRadius: 2, backgroundColor: theme.border, overflow: 'hidden' }}>
+                                      <View style={{ width: `${s}%`, height: '100%', backgroundColor: c }} />
+                                    </View>
+                                    <Text style={{ color: c, fontSize: 12, fontWeight: '900', minWidth: 36, textAlign: 'right' }}>{s}%</Text>
+                                  </View>
+                                );
+                              })}
+                              {/* All retired habits collapse into ONE muted row —
+                                  their earned score still counts toward the grade,
+                                  but they're a single "done" line, not clutter. */}
+                              {retired.length > 0 && (() => {
+                                const rScores = retired.map(h => calculateStrengthScore(h, getFormatDateStr()));
+                                const rAvg = rScores.length ? Math.round(rScores.reduce((a, b) => a + b, 0) / rScores.length) : 0;
+                                return (
+                                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 4, paddingTop: 12, borderTopWidth: 1, borderTopColor: theme.border }}>
+                                    <Feather name="award" size={14} color={theme.textSub} />
+                                    <Text style={{ flex: 1, color: theme.textSub, fontSize: 13, fontWeight: '800', fontStyle: 'italic' }} numberOfLines={1}>Retired · {retired.length}</Text>
+                                    <View style={{ width: 80, height: 4, borderRadius: 2, backgroundColor: theme.border, overflow: 'hidden' }}>
+                                      <View style={{ width: `${rAvg}%`, height: '100%', backgroundColor: theme.textSub }} />
+                                    </View>
+                                    <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '900', minWidth: 36, textAlign: 'right' }}>{rAvg}%</Text>
+                                  </View>
+                                );
+                              })()}
+                            </View>
+                          </>
+                        );
+                      })()}
                     </>
                   );
                 })()}
@@ -1664,7 +2055,9 @@ export default function HabitsScreen() {
                   <View style={{ flexDirection: 'row', gap: 12 }}>
                     {vaultTab === 'all' && <TouchableOpacity onPress={() => updateHabitStatus(h.id, 'archived')} hitSlop={15} style={{ padding: 8, backgroundColor: theme.bg, borderRadius: 8 }}><Feather name="archive" size={18} color={theme.textSub} /></TouchableOpacity>}
                     {vaultTab === 'archived' && <TouchableOpacity onPress={() => updateHabitStatus(h.id, 'active')} hitSlop={15} style={{ padding: 8, backgroundColor: theme.bg, borderRadius: 8 }}><Feather name="refresh-ccw" size={18} color={theme.success} /></TouchableOpacity>}
-                    <TouchableOpacity onPress={() => setDeleteConfirmId(h.id)} hitSlop={15} style={{ padding: 8, backgroundColor: theme.bg, borderRadius: 8 }}><Feather name="trash-2" size={18} color={theme.danger} /></TouchableOpacity>
+                    {/* Permanent erase only for never-completed habits — anything
+                        with real history is honored (Retire, from the detail view). */}
+                    {h.history.length === 0 && <TouchableOpacity onPress={() => setDeleteConfirmId(h.id)} hitSlop={15} style={{ padding: 8, backgroundColor: theme.bg, borderRadius: 8 }}><Feather name="trash-2" size={18} color={theme.danger} /></TouchableOpacity>}
                   </View>
                 </View>
               ))}
@@ -1705,8 +2098,10 @@ export default function HabitsScreen() {
             <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
               <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingTop: 16, paddingBottom: 60, paddingHorizontal: 24 }} keyboardShouldPersistTaps="handled">
               
-              <TextInput style={[{ fontSize: 28, fontWeight: '900', marginBottom: 20, color: theme.textMain }, persianSafeInputStyle]} placeholder="What's the habit?" placeholderTextColor={theme.border} value={newTitle} onChangeText={setNewTitle} />
-              
+              <TextInput style={[{ fontSize: 28, fontWeight: '900', marginBottom: 12, color: theme.textMain }, persianSafeInputStyle]} placeholder="What's the habit?" placeholderTextColor={theme.border} value={newTitle} onChangeText={setNewTitle} />
+
+              <TextInput style={[{ fontSize: 15, fontWeight: '500', lineHeight: 22, marginBottom: 24, color: theme.textSub }, persianSafeInputStyle]} placeholder="Why it matters (optional)" placeholderTextColor={theme.border} value={newDescription} onChangeText={setNewDescription} multiline maxLength={200} />
+
               <View style={{flexDirection: 'row', gap: 15, marginBottom: 30}}>
                 <View style={{flex: 1}}>
                   <Text style={{ fontSize: 11, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1, color: theme.textSub, marginBottom: 8 }}>Daily Target</Text>
@@ -1832,14 +2227,30 @@ export default function HabitsScreen() {
                 </View>
               </View>
 
-              {editingId && (
-                <TouchableOpacity
-                  style={{ marginTop: 24, padding: 16, backgroundColor: theme.danger + '15', borderRadius: 16, alignItems: 'center', borderWidth: 1, borderColor: theme.danger + '30' }}
-                  onPress={() => { setDeleteConfirmId(editingId); }}
-                >
-                  <Text style={{ color: theme.danger, fontWeight: '800', fontSize: 16 }}>Delete Habit</Text>
-                </TouchableOpacity>
-              )}
+              {editingId && (() => {
+                // Habits with real history can only be Retired (progress is
+                // respected); only a blank, never-completed habit can be Removed.
+                const editingHabit = useAppStore.getState().habits.find(h => h.id === editingId);
+                const hasHistory = (editingHabit?.history?.length || 0) > 0;
+                if (hasHistory) {
+                  return (
+                    <TouchableOpacity
+                      style={{ marginTop: 24, padding: 16, backgroundColor: theme.surface, borderRadius: 16, alignItems: 'center', borderWidth: 1, borderColor: theme.border }}
+                      onPress={() => { closeSheet(); if (editingHabit) setRetireTarget(editingHabit); }}
+                    >
+                      <Text style={{ color: theme.textMain, fontWeight: '800', fontSize: 16 }}>Retire Habit</Text>
+                    </TouchableOpacity>
+                  );
+                }
+                return (
+                  <TouchableOpacity
+                    style={{ marginTop: 24, padding: 16, backgroundColor: theme.danger + '15', borderRadius: 16, alignItems: 'center', borderWidth: 1, borderColor: theme.danger + '30' }}
+                    onPress={() => { setDeleteConfirmId(editingId); }}
+                  >
+                    <Text style={{ color: theme.danger, fontWeight: '800', fontSize: 16 }}>Remove Habit</Text>
+                  </TouchableOpacity>
+                );
+              })()}
 
               </ScrollView>
             </KeyboardAvoidingView>
@@ -1847,77 +2258,22 @@ export default function HabitsScreen() {
             </View>
           </Modal>
 
-          {/* ── SUNDAY WEEKLY REVIEW ── */}
-          <Modal visible={showWeeklyReview} animationType="slide" presentationStyle="fullScreen" onRequestClose={() => { setShowWeeklyReview(false); setLastWeeklyReviewDismissed(getFormatDateStr()); }}>
-            <View style={{ flex: 1, backgroundColor: theme.bg }}>
-              <SafeAreaView style={{ flex: 1 }} edges={['top']}>
-                <View style={{ paddingHorizontal: 24, paddingTop: 30, paddingBottom: 20 }}>
-                  <Text style={{ fontSize: 28, fontWeight: '900', color: theme.textMain, letterSpacing: -0.5 }}>Weekly Review</Text>
-                  <Text style={{ color: theme.textSub, fontSize: 13, fontWeight: '600', marginTop: 4 }}>60 seconds. Be honest.</Text>
-                </View>
-                <GHScrollView contentContainerStyle={{ paddingHorizontal: 24, paddingBottom: 120 }}>
-                  <Text style={{ color: theme.textSub, fontSize: 11, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>This week's performance</Text>
-                  {habits.filter(h => h.status === 'active').map(h => {
-                    const todayStr = getFormatDateStr();
-                    const weekScore = (() => {
-                      const [ry, rm, rd] = todayStr.split('-').map(Number);
-                      const refUTC = Date.UTC(ry, rm - 1, rd);
-                      const dateCounts: Record<string, number> = {};
-                      h.history.forEach(d => { dateCounts[d] = (dateCounts[d] || 0) + 1; });
-                      let scheduled = 0, completed = 0;
-                      for (let i = 0; i < 7; i++) {
-                        const d = new Date(refUTC - i * 86400000);
-                        const checkStr = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
-                        if (h.restDays?.includes(checkStr)) continue;
-                        let isScheduled = false;
-                        if (h.scheduleType === 'interval') {
-                          if (h.startDate) { const diff = diffInDays(h.startDate, checkStr); isScheduled = diff >= 0 && diff % (h.intervalDays || 1) === 0; }
-                        } else { isScheduled = h.frequency.length === 0 || h.frequency.includes(JS_DAYS[d.getUTCDay()]); }
-                        if (!isScheduled) continue;
-                        scheduled++;
-                        if ((dateCounts[checkStr] || 0) >= h.targetCount) completed++;
-                      }
-                      return scheduled === 0 ? 100 : Math.round((completed / scheduled) * 100);
-                    })();
-                    return (
-                      <View key={h.id} style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: theme.border }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 }}>
-                          <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: h.color }} />
-                          <Text style={{ color: theme.textMain, fontSize: 15, fontWeight: '700', flex: 1 }} numberOfLines={1}>{h.title}</Text>
-                        </View>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-                          <Text style={{ fontSize: 14, fontWeight: '900', color: weekScore >= 80 ? h.color : weekScore >= 50 ? theme.textSub : theme.danger }}>{weekScore}%</Text>
-                          <TouchableOpacity onPress={() => { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning); updateHabitStatus(h.id, 'archived'); }} style={{ paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, backgroundColor: hexToRgba(theme.danger, 0.1) }}>
-                            <Text style={{ color: theme.danger, fontSize: 11, fontWeight: '800' }}>Kill</Text>
-                          </TouchableOpacity>
-                        </View>
-                      </View>
-                    );
-                  })}
-                  <View style={{ marginTop: 30, alignItems: 'center' }}>
-                    <Text style={{ color: theme.textSub, fontSize: 13, fontWeight: '600', fontStyle: 'italic', textAlign: 'center', lineHeight: 22, marginBottom: 24 }}>If a habit feels like a chore, kill it or commit harder. There's no middle ground.</Text>
-                    <TouchableOpacity onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setShowWeeklyReview(false); setLastWeeklyReviewDismissed(getFormatDateStr()); }} style={{ backgroundColor: theme.textMain, paddingHorizontal: 32, paddingVertical: 14, borderRadius: 100 }}>
-                      <Text style={{ color: theme.bg, fontWeight: '900', fontSize: 16 }}>Done</Text>
-                    </TouchableOpacity>
-                  </View>
-                </GHScrollView>
-              </SafeAreaView>
-            </View>
-          </Modal>
 
           {/* ── HABIT DETAIL VIEW — positioned overlay so BottomSheet edit can stack above it ── */}
           {detailHabit && (() => {
               const dh = useAppStore.getState().habits.find(h => h.id === detailHabit.id) || detailHabit;
               const dhStrength = calculateStrengthScore(dh, getFormatDateStr());
-              const dhStreak = calculateStreak(dh.history, dh.restDays || [], dh.skippedDays || [], dh.targetCount);
+              const dhStreak = calculateStreak(dh);
               const dhCreated = new Date(dh.createdAt);
               const dhDaysActive = diffInDays(getFormatDateStr(dhCreated), getFormatDateStr());
               const dhTotalCompletions = dh.history.length;
               const dhNotes = Object.entries(dh.completionNotes || {}).sort(([a], [b]) => b.localeCompare(a));
 
-              // Cross-tab: challenges that link this habit (only active ones worth showing)
+              // Cross-tab: challenges that link this habit (only active ones worth showing).
+              // Reads the new `links` model, with a legacy linkedHabitIds fallback for
+              // any challenge not yet migrated.
               const linkedChallenges = (useAppStore.getState().challenges || []).filter(
-                c => c.linkedHabitIds?.includes(dh.id) && c.deadState === 'active'
+                c => (c.links?.some(l => l.habitId === dh.id) || c.linkedHabitIds?.includes(dh.id)) && c.deadState === 'active'
               );
 
               // Format a YYYY-MM-DD string according to the active calendar
@@ -1956,6 +2312,11 @@ export default function HabitsScreen() {
                           <Text style={{ color: theme.textSub, fontSize: 13, fontWeight: '600', marginTop: 2 }}>{dh.targetCount} {dh.unit} • {dh.timeBlock} • {dhDaysActive}d active</Text>
                         </View>
                       </View>
+
+                      {/* Description — the "why", shown only when set */}
+                      {dh.description ? (
+                        <Text style={{ color: theme.textMain, fontSize: 15, fontWeight: '500', lineHeight: 22, marginBottom: 24, opacity: 0.85 }}>{dh.description}</Text>
+                      ) : null}
 
                       {/* Strength Score — large */}
                       <View style={{ flexDirection: 'row', gap: 10, marginBottom: 24 }}>
@@ -2061,17 +2422,98 @@ export default function HabitsScreen() {
 
                     {/* Bottom bar — sits on the scene's bottom; tab layout already handles home indicator */}
                     <View style={{ borderTopWidth: 1, borderTopColor: theme.border, paddingHorizontal: 24, paddingVertical: 14, flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', backgroundColor: theme.bg }}>
-                      <TouchableOpacity onPress={() => { updateHabitStatus(dh.id, 'archived'); setDetailHabit(null); Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning); }} hitSlop={15}>
-                        <Feather name="archive" size={20} color={theme.textSub} />
+                      {/* Archive = long-pause: set it aside, comes back later. */}
+                      <TouchableOpacity onPress={() => { updateHabitStatus(dh.id, 'archived'); setDetailHabit(null); Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning); }} hitSlop={15} style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <Feather name="archive" size={18} color={theme.textSub} />
+                        <Text style={{ color: theme.textSub, fontSize: 13, fontWeight: '800' }}>Archive</Text>
                       </TouchableOpacity>
-                      <TouchableOpacity onPress={() => { setDetailHabit(null); setDeleteConfirmId(dh.id); }} hitSlop={15}>
-                        <Feather name="trash-2" size={20} color={theme.textSub} />
-                      </TouchableOpacity>
+                      {dh.history.length === 0 ? (
+                        // No track record yet → a clean Remove is allowed (mistake scrub).
+                        <TouchableOpacity onPress={() => { setDetailHabit(null); setDeleteConfirmId(dh.id); }} hitSlop={15} style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          <Feather name="trash-2" size={18} color={theme.danger} />
+                          <Text style={{ color: theme.danger, fontSize: 13, fontWeight: '800' }}>Remove</Text>
+                        </TouchableOpacity>
+                      ) : (
+                        // Has history → honor it: Retire keeps the trophy + frozen score.
+                        <TouchableOpacity onPress={() => setRetireTarget(dh)} hitSlop={15} style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          <Feather name="award" size={18} color={theme.textMain} />
+                          <Text style={{ color: theme.textMain, fontSize: 13, fontWeight: '800' }}>Retire</Text>
+                        </TouchableOpacity>
+                      )}
                     </View>
                   </SafeAreaView>
                 </Animated.View>
               );
             })()}
+
+          {/* ── RETIRED (trophies) SCREEN ── kept retired habits; their frozen
+              strength still counts toward the grade. */}
+          {showRetired && (
+            <Animated.View entering={FadeInDown.duration(260)} style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: theme.bg, zIndex: 55 }}>
+              <SafeAreaView style={{ flex: 1 }} edges={['top']}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: theme.border }}>
+                  <TouchableOpacity onPress={() => { setShowRetired(false); setBringBackId(null); }} hitSlop={15} style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Feather name="chevron-left" size={22} color={theme.textMain} />
+                    <Text style={{ color: theme.textSub, fontSize: 14, fontWeight: '700' }}>Habits</Text>
+                  </TouchableOpacity>
+                  <Text style={{ color: theme.textMain, fontSize: 16, fontWeight: '900' }}>Retired</Text>
+                  <View style={{ width: 40 }} />
+                </View>
+                <GHScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 24, paddingBottom: 80 }}>
+                  <Text style={{ color: theme.textSub, fontSize: 13, fontWeight: '600', fontStyle: 'italic', marginBottom: 20, lineHeight: 20 }}>Habits you saw through. The strength they earned still counts.</Text>
+                  {retiredHabits.length === 0 ? (
+                    <View style={{ alignItems: 'center', paddingTop: 60 }}>
+                      <Feather name="award" size={32} color={theme.textSub} style={{ opacity: 0.2, marginBottom: 14 }} />
+                      <Text style={{ color: theme.textSub, fontSize: 13, fontWeight: '700' }}>Nothing retired yet.</Text>
+                    </View>
+                  ) : retiredHabits.map((h) => {
+                    const frozen = calculateStrengthScore(h, getFormatDateStr());
+                    const fmtRetired = (() => {
+                      if (!h.retiredAt) return '';
+                      const [y, m, d] = h.retiredAt.split('-').map(Number);
+                      const date = new Date(y, m - 1, d);
+                      if (calendarType === 'shamsi') { const p = getShamsiDateParts(date); return `${p.day} ${S_MONTHS[p.month - 1].slice(0, 3)} ${p.year}`; }
+                      return `${d} ${G_MONTHS[m - 1]} ${y}`;
+                    })();
+                    const showBringBack = bringBackId === h.id;
+                    return (
+                      // Long-press ~2s reveals a hidden "bring back" button — a
+                      // quiet escape hatch, not something you trip over. A normal
+                      // tap dismisses it again.
+                      <Pressable
+                        key={h.id}
+                        onLongPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy); setBringBackId(h.id); }}
+                        delayLongPress={2000}
+                        onPress={() => { if (showBringBack) setBringBackId(null); }}
+                        style={{ backgroundColor: theme.surface, borderRadius: 16, padding: 18, marginBottom: 12, borderWidth: 1, borderColor: showBringBack ? h.color : theme.border, borderLeftWidth: 4, borderLeftColor: h.color }}
+                      >
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                          <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: hexToRgba(h.color, 0.15), justifyContent: 'center', alignItems: 'center' }}>
+                            <Feather name={h.icon} size={20} color={h.color} />
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={{ color: theme.textMain, fontSize: 17, fontWeight: '900' }}>{h.title}</Text>
+                            <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '600', marginTop: 2 }}>Retired {fmtRetired} • {h.history.length} done</Text>
+                          </View>
+                          <Text style={{ fontSize: 20, fontWeight: '900', color: frozen >= 80 ? h.color : frozen >= 50 ? theme.textSub : theme.danger }}>{frozen}%</Text>
+                        </View>
+                        {h.description ? <Text style={{ color: theme.textSub, fontSize: 13, fontWeight: '500', lineHeight: 20, marginTop: 12 }}>{h.description}</Text> : null}
+                        {showBringBack && (
+                          <TouchableOpacity
+                            onPress={() => { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); unretireHabit(h.id, getFormatDateStr()); setBringBackId(null); }}
+                            style={{ marginTop: 14, paddingVertical: 12, borderRadius: 12, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 8, backgroundColor: hexToRgba(h.color, 0.15), borderWidth: 1, borderColor: hexToRgba(h.color, 0.4) }}
+                          >
+                            <Feather name="rotate-ccw" size={15} color={h.color} />
+                            <Text style={{ color: h.color, fontWeight: '800', fontSize: 14 }}>Bring this habit back</Text>
+                          </TouchableOpacity>
+                        )}
+                      </Pressable>
+                    );
+                  })}
+                </GHScrollView>
+              </SafeAreaView>
+            </Animated.View>
+          )}
 
           {/* ── PACT SETUP MODAL (pick a habit) ── */}
           <Modal visible={showPactSetup} transparent animationType="fade" onRequestClose={() => setShowPactSetup(false)}>
@@ -2243,21 +2685,16 @@ export default function HabitsScreen() {
                           <Text style={{ color: theme.bg, fontWeight: '900', fontSize: 15 }}>Close</Text>
                         </TouchableOpacity>
                       )}
-                      {/* Secondary actions: history + auto-note toggle */}
-                      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8, paddingTop: 14, borderTopWidth: 1, borderTopColor: theme.border }}>
-                        {pact && pact.history && pact.history.length > 0 ? (
+                      {/* Secondary action: history (auto-note toggle removed
+                          when auto-notes themselves were retired). */}
+                      {pact && pact.history && pact.history.length > 0 ? (
+                        <View style={{ marginTop: 8, paddingTop: 14, borderTopWidth: 1, borderTopColor: theme.border }}>
                           <TouchableOpacity onPress={() => { setShowPactDecision(false); setPactOutcomeOverride(null); setTimeout(() => setShowPactHistory(true), 250); }} style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                             <Feather name="clock" size={12} color={theme.textSub} />
                             <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '700' }}>History ({pact.history.length})</Text>
                           </TouchableOpacity>
-                        ) : <View />}
-                        <TouchableOpacity onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setPactAutoNote(pactAutoNote === false); }} style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                          <Text style={{ color: theme.textSub, fontSize: 11, fontWeight: '600' }}>Auto-note on failure</Text>
-                          <View style={{ width: 28, height: 16, borderRadius: 8, backgroundColor: pactAutoNote !== false ? theme.textMain : theme.border, padding: 2 }}>
-                            <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: theme.bg, transform: [{ translateX: pactAutoNote !== false ? 12 : 0 }] }} />
-                          </View>
-                        </TouchableOpacity>
-                      </View>
+                        </View>
+                      ) : null}
                       <TouchableOpacity onPress={() => {
                         setShowPactDecision(false);
                         setPactOutcomeOverride(null);

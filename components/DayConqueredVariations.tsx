@@ -1,5 +1,5 @@
 /**
- * Day Conquered — 5 variations (3 minimal, 2 special).
+ * Day Conquered — 3 variations (Brutal, Horizon, NightSky).
  * Used by the habits tab (production) and the art tab (testing).
  *
  * Each component is a full-screen overlay. Expects:
@@ -8,7 +8,7 @@
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { Platform, Text, View } from 'react-native';
+import { Text, View } from 'react-native';
 import Animated, {
   useSharedValue, useAnimatedStyle, withTiming, withSequence, withDelay,
   Easing, FadeIn, runOnJS, cancelAnimation,
@@ -17,27 +17,9 @@ import Animated, {
 type Theme = { bg: string; textMain: string; textSub: string };
 type Props = { theme: Theme; onDone?: () => void };
 
-export type EclipseVariationKey = 'silence' | 'brutal' | 'hour' | 'horizon' | 'nightsky';
+export type EclipseVariationKey = 'brutal' | 'horizon' | 'nightsky';
 
 // ─── SIMPLE ──────────────────────────────────────────────────────
-
-export function Eclipse_Silence({ theme, onDone }: Props) {
-  const opacity = useSharedValue(0);
-  useEffect(() => {
-    const finish = () => { onDone && onDone(); };
-    opacity.value = withSequence(
-      withDelay(600, withTiming(1, { duration: 1200, easing: Easing.out(Easing.quad) })),
-      withDelay(2500, withTiming(0, { duration: 900 }, (f) => { 'worklet'; if (f) runOnJS(finish)(); })),
-    );
-    return () => { cancelAnimation(opacity); };
-  }, []);
-  const style = useAnimatedStyle(() => ({ opacity: opacity.value }));
-  return (
-    <Animated.View style={[{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: theme.bg, paddingHorizontal: 48 }, style]}>
-      <Text style={{ color: theme.textMain, fontSize: 22, fontWeight: '400', textAlign: 'center', letterSpacing: 0.3, lineHeight: 32, fontStyle: 'italic', fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif' }}>that was today.</Text>
-    </Animated.View>
-  );
-}
 
 export function Eclipse_Brutal({ theme, onDone }: Props) {
   const opacity = useSharedValue(0);
@@ -53,27 +35,6 @@ export function Eclipse_Brutal({ theme, onDone }: Props) {
   return (
     <Animated.View style={[{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: theme.bg }, style]}>
       <Text style={{ color: theme.textMain, fontSize: 72, fontWeight: '900', letterSpacing: -4, textAlign: 'center' }}>done.</Text>
-    </Animated.View>
-  );
-}
-
-export function Eclipse_Hour({ theme, onDone }: Props) {
-  const opacity = useSharedValue(0);
-  const timeStr = useMemo(() => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }), []);
-  useEffect(() => {
-    const finish = () => { onDone && onDone(); };
-    opacity.value = withSequence(
-      withTiming(1, { duration: 800 }),
-      withDelay(2500, withTiming(0, { duration: 700 }, (f) => { 'worklet'; if (f) runOnJS(finish)(); })),
-    );
-    return () => { cancelAnimation(opacity); };
-  }, []);
-  const style = useAnimatedStyle(() => ({ opacity: opacity.value }));
-  return (
-    <Animated.View style={[{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: theme.bg }, style]}>
-      <Text style={{ color: theme.textMain, fontSize: 88, fontWeight: '200', letterSpacing: -3, fontVariant: ['tabular-nums'] }}>{timeStr}</Text>
-      <View style={{ width: 40, height: 1, backgroundColor: theme.textSub, opacity: 0.4, marginVertical: 20 }} />
-      <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '800', letterSpacing: 3, textTransform: 'uppercase' }}>closed</Text>
     </Animated.View>
   );
 }

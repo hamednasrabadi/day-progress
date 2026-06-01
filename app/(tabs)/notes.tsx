@@ -21,7 +21,6 @@ import { exportNotesAsMarkdown } from "../../lib/notesExport";
 import {
   BackHandler,
   Keyboard,
-  KeyboardAvoidingView,
   LayoutAnimation,
   Modal,
   Platform,
@@ -38,7 +37,9 @@ import {
 } from "react-native";
 import { GestureHandlerRootView, Swipeable } from "react-native-gesture-handler";
 import ImageViewer from "react-native-image-zoom-viewer";
-import Animated, { FadeInDown } from "react-native-reanimated";
+import Animated, { FadeInDown, FadeIn } from "react-native-reanimated";
+import { KeyboardAwareScrollView, KeyboardProvider } from "react-native-keyboard-controller";
+import { FEATURE_IDS, useIsUnlocked, useDaysSinceInstall } from "../../lib/unlocks";
 
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { BottomSheetBackdrop, BottomSheetModal, BottomSheetModalProvider, BottomSheetScrollView } from "@gorhom/bottom-sheet";
@@ -61,10 +62,15 @@ function hexToRgba(hex: string, alpha: number): string {
 }
 
 type Theme = { bg: string; surface: string; border: string; textMain: string; textSub: string; danger: string; success: string; focusText: string; accent: string; };
-function getTheme(dark: boolean): Theme {
-  return dark
-    ? { bg: "#000000", surface: "#0A0A0A", border: "#1A1A1A", textMain: "#FFFFFF", textSub: "#666666", danger: "#F43F5E", success: "#10B981", focusText: "#DDDDDD", accent: "#8B5CF6" }
-    : { bg: "#F8F9FA", surface: "#FFFFFF", border: "#E5E5EA", textMain: "#111111", textSub: "#888888", danger: "#F43F5E", success: "#10B981", focusText: "#333333", accent: "#8B5CF6" };
+function getTheme(mode: 'light' | 'dark' | 'blue'): Theme {
+  switch (mode) {
+    case 'blue':
+      return { bg: "#0B1A2B", surface: "#122A40", border: "#1E3A52", textMain: "#E8F0F8", textSub: "#7FA0BC", danger: "#F43F5E", success: "#10B981", focusText: "#D8E6F4", accent: "#8B5CF6" };
+    case 'dark':
+      return { bg: "#121214", surface: "#1C1C20", border: "#2C2C30", textMain: "#F4F4F5", textSub: "#8A8A92", danger: "#F43F5E", success: "#10B981", focusText: "#DDDDDD", accent: "#8B5CF6" };
+    default:
+      return { bg: "#F8F9FA", surface: "#FFFFFF", border: "#E5E5EA", textMain: "#111111", textSub: "#888888", danger: "#F43F5E", success: "#10B981", focusText: "#333333", accent: "#8B5CF6" };
+  }
 }
 
 const JS_DAY_MAP: Record<number, string> = { 0: "Sunday", 1: "Monday", 2: "Tuesday", 3: "Wednesday", 4: "Thursday", 5: "Friday", 6: "Saturday" };
@@ -150,6 +156,7 @@ const getUnlockMoment = (note: { unlockDateStr?: string; unlockDate?: number }):
   return note.unlockDate || 0;
 };
 
+// eslint-disable-next-line react/display-name -- Swipeable render callback, not a component
 const makeLeftActions = (theme: Theme, status: NoteStatus) => (p: any, d: RNAnimated.AnimatedInterpolation<any>) => {
   const action = status === "active" ? "archive" : "corner-up-left";
   const scale = d.interpolate({ inputRange: [0, 100], outputRange: [0.5, 1], extrapolate: "clamp" });
@@ -160,6 +167,7 @@ const makeLeftActions = (theme: Theme, status: NoteStatus) => (p: any, d: RNAnim
   );
 };
 
+// eslint-disable-next-line react/display-name -- Swipeable render callback, not a component
 const makeRightActions = (theme: Theme, status: NoteStatus) => (p: any, d: RNAnimated.AnimatedInterpolation<any>) => {
   const isTrash = status === "trash";
   const scale = d.interpolate({ inputRange: [-100, 0], outputRange: [1, 0.5], extrapolate: "clamp" });
@@ -298,7 +306,7 @@ const parseInlineFormatting = (content: string, color: string, theme: Theme): Re
   return out;
 };
 
-const RichTextContent = React.memo(({ text, color, isExpanded, theme, onToggleCheckbox }: any) => {
+const RichTextContent = React.memo(function RichTextContent({ text, color, isExpanded, theme, onToggleCheckbox }: any) {
   const lines = text.split("\n");
   const maxLines = isExpanded ? lines.length : 4;
   const displayLines = lines.slice(0, maxLines);
@@ -362,7 +370,7 @@ const RichTextContent = React.memo(({ text, color, isExpanded, theme, onToggleCh
 });
 
 // --- MONOLITH DESIGN ---
-const CapsuleCard = React.memo(({ note, theme, onOpenCapsule, onStatusChange, onDeleteForever }: any) => {
+const CapsuleCard = React.memo(function CapsuleCard({ note, theme, onOpenCapsule, onStatusChange, onDeleteForever }: any) {
   const renderLeft = useMemo(() => makeLeftActions(theme, note.status), [theme, note.status]);
   const renderRight = useMemo(() => makeRightActions(theme, note.status), [theme, note.status]);
 
@@ -446,6 +454,12 @@ const CapsuleCard = React.memo(({ note, theme, onOpenCapsule, onStatusChange, on
   );
 });
 
+// Day on which SEALING unlocks — mirrors the daysSinceInstall >= 10 predicate
+// in lib/unlockTriggers.ts. Kept as a local const only to drive the locked
+// Seal pill's countdown; the trigger remains the single source of the actual
+// unlock. If the threshold ever moves, change it in BOTH places.
+const SEALING_UNLOCK_DAY = 10;
+
 const HighlightText = ({ text, highlight, style, theme }: { text: string; highlight: string; style: any; theme: Theme }) => {
   if (!highlight || highlight.length < 2) return <Text style={style}>{text}</Text>;
   const parts = text.split(new RegExp(`(${highlight.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'));
@@ -460,7 +474,7 @@ const HighlightText = ({ text, highlight, style, theme }: { text: string; highli
   );
 };
 
-const NoteCard = React.memo(({ note, theme, calSystem, onOpen, onStatusChange, onPin, onDeleteForever, searchQuery }: any) => {
+const NoteCard = React.memo(function NoteCard({ note, theme, calSystem, onOpen, onStatusChange, onPin, onDeleteForever, searchQuery }: any) {
   const renderLeft = useMemo(() => makeLeftActions(theme, note.status), [theme, note.status]);
   const renderRight = useMemo(() => makeRightActions(theme, note.status), [theme, note.status]);
 
@@ -517,7 +531,7 @@ const NoteCard = React.memo(({ note, theme, calSystem, onOpen, onStatusChange, o
                 summary; checkboxes become unicode glyphs (✓/○) so the
                 preview still hints at their structure without showing `[ ]`. */}
             {(() => {
-              const previewLines = stripAllMarkdown(note.content)
+              const previewLines = stripAllMarkdown(note.content || '')
                 .split('\n')
                 .filter(l => l.trim().length > 0)
                 .slice(0, 3);
@@ -581,12 +595,28 @@ export default function NotesScreen() {
     toggleNotePin,
     updateNoteContent,
   } = useAppStore();
-  const theme = useMemo(() => getTheme(isDarkMode), [isDarkMode]);
+  const themeMode = useAppStore(s => s.themeMode);
+  const theme = useMemo(() => getTheme(themeMode), [themeMode]);
   const insets = useSafeAreaInsets();
 
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [activeFilter, setActiveFilter] = useState<string>("$SYS_ALL");
+
+  // ── Progressive unlock gates ──
+  // diary (3 notes) → the book-open toggle + diary mode; highlight (same
+  // trigger) → the H tool in the editor toolbar; mood (1 diary entry) → the
+  // mood chip in the diary editor; sealing (10 days) → the Seal pill. Each is
+  // absent when locked and fades in on first appearance.
+  const diaryUnlocked = useIsUnlocked(FEATURE_IDS.DIARY);
+  const highlightColorsUnlocked = useIsUnlocked(FEATURE_IDS.HIGHLIGHT_COLORS);
+  const moodTaggingUnlocked = useIsUnlocked(FEATURE_IDS.MOOD_TAGGING);
+  const sealingUnlocked = useIsUnlocked(FEATURE_IDS.SEALING);
+  // Drives the Sealed Messages teaser countdown. daysLeft <= 0 means the
+  // trigger is about to (or just did) flip sealingUnlocked, so the teaser
+  // stops rendering on that tick.
+  const daysSinceInstall = useDaysSinceInstall();
+  const sealingDaysLeft = Math.max(0, SEALING_UNLOCK_DAY - daysSinceInstall);
   // Diary mode: when true, the tab swaps the regular notes feed for the
   // chronological DiaryView. Diary entries are still notes (Note objects with
   // kind === 'diary'); the toggle just changes what's rendered and how new
@@ -611,6 +641,13 @@ export default function NotesScreen() {
   // Time Capsule States
   const [isSealing, setIsSealing] = useState(false);
   const [readingCapsule, setReadingCapsule] = useState<Note | null>(null);
+  // Pending seal date held while the editor is open. null = no seal queued
+  // (commit will save a regular note). A timestamp = "the user has chosen
+  // this unlock date; the note will be sealed when Commit fires." Decoupling
+  // the seal config from the save action means the user can write/edit
+  // freely after picking the date, change their mind, or change the date,
+  // all without re-entering the modal multiple times.
+  const [pendingSealMs, setPendingSealMs] = useState<number | null>(null);
 
   // Version History
   const [historyNote, setHistoryNote] = useState<Note | null>(null);
@@ -711,6 +748,10 @@ export default function NotesScreen() {
 
   const closeEditor = useCallback((savedNoteId?: string) => {
     setIsEditorVisible(false);
+    // Reset pending seal — leaking a "will seal" intent into the next editor
+    // session would be the worst kind of footgun (user opens a new note, taps
+    // commit, gets an unexpected capsule).
+    setPendingSealMs(null);
     // Clean up media files copied to documentDirectory during this editor
     // session that didn't make it into the persisted note — either because the
     // user cancelled (no savedNoteId) or because they added then removed media
@@ -773,15 +814,25 @@ export default function NotesScreen() {
         const sealed = allNotes.filter(n => n.isSealed);
         for (const note of sealed) {
           if (cancelled) return;
+          // Accumulate field changes into one write at the end so migration +
+          // force-surface don't clobber each other.
+          const patch: Partial<Note> = {};
           // Migration: derive unlockDateStr from legacy unlockDate if missing.
           let dateStr = note.unlockDateStr;
           if (!dateStr && note.unlockDate) {
             const d = new Date(note.unlockDate);
             dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-            addOrUpdateNote({ ...note, unlockDateStr: dateStr });
+            patch.unlockDateStr = dateStr;
           }
           if (!dateStr) continue; // event-locked or otherwise no date
           const targetMs = getUnlockMoment({ unlockDateStr: dateStr });
+          // If the unlock moment has passed but the capsule is buried in
+          // trash/archive, force it back to active so the ready message
+          // surfaces instead of staying hidden where the user never sees it.
+          if (targetMs <= Date.now() && note.status !== 'active') {
+            patch.status = 'active';
+          }
+          if (Object.keys(patch).length > 0) addOrUpdateNote({ ...note, ...patch });
           const notifId = `${CAPSULE_NOTIF_PREFIX}${note.id}`;
           // Cancel any stale schedule first — scheduleNotificationAsync with the
           // same identifier replaces, but cancelling first means we never leave
@@ -834,12 +885,18 @@ export default function NotesScreen() {
 
   const handleOpenSealModal = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    const d = new Date();
-    d.setDate(d.getDate() + 1);
+    // If the user already picked a seal date this session, re-open the dial
+    // on THAT date instead of "tomorrow." Makes "tap the lit Sealing pill to
+    // edit the date" feel like edit-in-place rather than a fresh pick.
+    const base = pendingSealMs ? new Date(pendingSealMs) : (() => {
+      const t = new Date();
+      t.setDate(t.getDate() + 1);
+      return t;
+    })();
     if (calType === 'gregorian') {
-      setDial({ y: d.getFullYear(), m: d.getMonth(), d: d.getDate() });
+      setDial({ y: base.getFullYear(), m: base.getMonth(), d: base.getDate() });
     } else {
-      const [jy, jm, jd] = g2j(d.getFullYear(), d.getMonth() + 1, d.getDate());
+      const [jy, jm, jd] = g2j(base.getFullYear(), base.getMonth() + 1, base.getDate());
       setDial({ y: jy, m: jm - 1, d: jd });
     }
     setIsSealing(true);
@@ -887,6 +944,18 @@ export default function NotesScreen() {
   const trashNotes = useMemo(() => notes.filter((n) => n.status === "trash"), [notes]);
   const vaultCapsules = useMemo(() => notes.filter((n) => n.group === '$SYS_OPENED_CAPSULE' && n.status !== 'trash'), [notes]);
 
+  // Capsules that have unlocked but haven't been opened yet — still sealed
+  // (the user hasn't read them), unlock moment passed, and not an event-locked
+  // capsule still waiting on its challenge. Drives the purple "you have a
+  // message waiting" dot on the Capsules filter chip; clears once each is
+  // opened (opening flips isSealed false, dropping it from this set).
+  const readyCapsules = useMemo(() => notes.filter((n) => {
+    if (!n.isSealed || n.status !== 'active') return false;
+    const eventLockedWaiting = !!n.unlockOnChallengeId && !n.unlockDate && !n.unlockDateStr;
+    if (eventLockedWaiting) return false;
+    return getUnlockMoment(n) <= Date.now();
+  }), [notes]);
+
   const feedData = useMemo(() => {
     let raw = notes.filter((n) => {
       // Diary entries never appear in the regular feed — they have their own
@@ -899,6 +968,14 @@ export default function NotesScreen() {
         : (n.content.toLowerCase().includes(searchQuery.toLowerCase()) || (n.title && n.title.toLowerCase().includes(searchQuery.toLowerCase())));
 
       if (!matchesSearch) return false;
+      // Challenge-linked capsules (event-locked, no unlock date yet) are
+      // hidden EVERYWHERE — including the dedicated Capsules filter. The
+      // whole point of a capsule sealed against a challenge outcome is that
+      // the user forgets they wrote it; seeing it sitting in the list every
+      // day erodes that forgetting. They reappear the instant the challenge
+      // achieves and stamps an unlock date onto the note.
+      const isHiddenEventCapsule = !!n.unlockOnChallengeId && !n.unlockDate && !n.unlockDateStr;
+      if (isHiddenEventCapsule) return false;
       if (activeFilter === "$SYS_CAPSULES") return n.isSealed && n.status === "active";
       if (n.isSealed) return false;
       if (activeFilter === "$SYS_LOCKED") return n.isLocked && n.status === "active";
@@ -961,7 +1038,7 @@ export default function NotesScreen() {
     const current = useAppStore.getState().notes.filter((n) => n.status === "trash");
     if (current.length === 0) return;
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-    setConfirmModal({ title: "Empty Trash", message: "Permanently delete all notes in the trash? This cannot be undone.", label: "Empty Trash", onConfirm: () => {
+    setConfirmModal({ title: "Purge trash?", message: "Permanently delete every note in the trash? This can't be undone.", label: "Purge all", onConfirm: () => {
       current.forEach((n) => {
         n.imageUris?.forEach(uri => deleteAsync(uri, { idempotent: true }).catch(e => console.warn('[notes] failed to delete image (empty trash)', uri, e)));
         n.audio?.forEach(memo => deleteAsync(memo.uri, { idempotent: true }).catch(e => console.warn('[notes] failed to delete audio (empty trash)', memo.uri, e)));
@@ -1161,6 +1238,10 @@ export default function NotesScreen() {
         setNoteText(""); setNoteColor(COLORS[1]); setEditorImageUris([]); setEditorAudio([]);
       }
       setMediaCollapsed(false);
+      // Defensive: closeEditor already resets this, but mirroring on open
+      // means an editor session never accidentally inherits the previous
+      // session's seal-intent if something exotic skipped the close path.
+      setPendingSealMs(null);
       setIsEditorVisible(true);
     }, [activeFilter, calendarType]);
 
@@ -1213,6 +1294,14 @@ export default function NotesScreen() {
         entryDate: isDiary ? (editorEntryDate ?? existing?.entryDate ?? existing?.createdAt ?? Date.now()) : existing?.entryDate,
       };
       addOrUpdateNote(newNote);
+      // Unlock counters — only NEW notes tick (editing an existing note is not
+      // a creation). A new diary entry is still a note, so it ticks BOTH
+      // totalNotesCreated and diaryEntriesCreated. Counters are monotonic.
+      if (!existing) {
+        const st = useAppStore.getState();
+        st.incrementTotalNotesCreated();
+        if (editingDiaryRef.current) st.incrementDiaryEntriesCreated();
+      }
       closeEditor(noteId);
       return noteId;
     }, [noteText, noteTitle, editorImageUris, editorAudio, editingId, noteGroup, noteColor, activeFilter, addOrUpdateNote, closeEditor, editorEntryDate, editorMood]);
@@ -1339,7 +1428,11 @@ export default function NotesScreen() {
                   chronological journal. Filled book icon when active so users
                   can see at a glance which mode they're in. Search stays
                   open across the toggle so a query carried over works in
-                  both modes (DiaryView filters its own list by searchQuery). */}
+                  both modes (DiaryView filters its own list by searchQuery).
+                  Gated on DIARY (3 notes) — completely absent until then,
+                  fades in on unlock. */}
+              {diaryUnlocked ? (
+              <Animated.View entering={FadeIn.duration(300)}>
               <TouchableOpacity onPress={async () => {
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                 // Entering diary mode while a lock is active triggers a
@@ -1376,6 +1469,8 @@ export default function NotesScreen() {
               }} hitSlop={15}>
                 <Feather name="book-open" size={20} color={diaryMode ? theme.textMain : theme.textSub} />
               </TouchableOpacity>
+              </Animated.View>
+              ) : null}
               <TouchableOpacity onPress={() => openNoteSheet(undefined, diaryMode)} hitSlop={15}><Feather name="plus-circle" size={22} color={theme.textMain} /></TouchableOpacity>
             </View>
           </View>
@@ -1404,10 +1499,15 @@ export default function NotesScreen() {
               <View style={{ width: 1, height: 20, backgroundColor: theme.border, marginHorizontal: 2 }} />
               {[ { id: "$SYS_CAPSULES", label: "Capsules", icon: "clock" as const }, { id: "$SYS_LOCKED", label: "Locked", icon: "lock" as const } ].map(({ id, label, icon }) => {
                 const isSelected = activeFilter === id;
+                // Purple dot when a capsule has unlocked but isn't opened yet —
+                // the user's only quiet signal that "a message from the past is
+                // here" (we deliberately keep this off the crowded Timeline).
+                const showReadyDot = id === "$SYS_CAPSULES" && readyCapsules.length > 0;
                 return (
                   <TouchableOpacity key={id} onPress={() => handleFilterPress(id)} style={{ paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, backgroundColor: isSelected ? theme.textMain : theme.surface, borderWidth: 1, borderColor: theme.border, flexDirection: "row", alignItems: "center", gap: 6 }}>
                     <Feather name={icon} size={10} color={isSelected ? theme.bg : theme.textSub} />
                     <Text style={{ color: isSelected ? theme.bg : theme.textSub, fontWeight: "800", fontSize: 12, textTransform: "uppercase" }}>{label}</Text>
+                    {showReadyDot && <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: artAccent, marginLeft: 1 }} />}
                   </TouchableOpacity>
                 );
               })}
@@ -1437,7 +1537,7 @@ export default function NotesScreen() {
             ) : searchQuery.trim().toLowerCase() === "help" ? (
               <ScrollView contentContainerStyle={{ padding: 24, paddingBottom: 120 }}>
                 <View style={{ backgroundColor: theme.surface, borderRadius: 16, padding: 24, borderWidth: 1, borderColor: theme.border }}>
-                  <Text style={{ color: theme.textMain, fontSize: 18, fontWeight: "900", marginBottom: 16, letterSpacing: -0.3 }}>You're not alone.</Text>
+                  <Text style={{ color: theme.textMain, fontSize: 18, fontWeight: "900", marginBottom: 16, letterSpacing: -0.3 }}>You&apos;re not alone.</Text>
                   <View style={{ gap: 16 }}>
                     {[
                       { label: "Crisis Text Line", detail: "Text HOME to 741741", region: "US" },
@@ -1594,7 +1694,13 @@ export default function NotesScreen() {
                         <TouchableOpacity onPress={() => handleShareNote(rn)} hitSlop={15}>
                           <Feather name="share" size={20} color={theme.textSub} />
                         </TouchableOpacity>
-                        {rn.history && rn.history.length > 0 && (
+                        {/* Version-history affordance — contextual, default-on
+                            (not a store unlock). Surfaces only after the note
+                            has been edited 3+ times (history caps at 3
+                            snapshots, so length>=3 == "edited 3+ times"). Kept
+                            as the clock icon to match this reader's icon row
+                            rather than a standalone text line. */}
+                        {rn.history && rn.history.length >= 3 && (
                           <TouchableOpacity onPress={() => handleShowHistory(rn)} hitSlop={15}>
                             <Feather name="clock" size={20} color={theme.textSub} />
                           </TouchableOpacity>
@@ -1629,9 +1735,12 @@ export default function NotesScreen() {
 
           {/* EDITOR MODAL */}
           <Modal visible={isEditorVisible} animationType="slide" presentationStyle="fullScreen" onRequestClose={() => closeEditor()}>
+            {/* Modals are a separate window the root KeyboardProvider can't
+                reach, so the editor needs its own. translucent flags match the
+                app's edge-to-edge config so keyboard insets compute correctly. */}
+            <KeyboardProvider statusBarTranslucent navigationBarTranslucent>
             <View style={{ flex: 1, backgroundColor: theme.surface }}>
               <SafeAreaView style={{ flex: 1 }} edges={["top"]}>
-              <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
                 {/* ── FIXED HEADER: action row + toolbar ── */}
                 <View style={{ backgroundColor: theme.bg, borderBottomWidth: 1, borderBottomColor: theme.border }}>
                   <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: 20, paddingTop: 16, paddingBottom: 8 }}>
@@ -1664,15 +1773,15 @@ export default function NotesScreen() {
                             </Text>
                           </TouchableOpacity>
                         )}
-                        {/* Mood chip — diary-only. Five vibe icons, optional.
-                            When a mood is set the chip shows that mood's icon
-                            in its accent color; otherwise a generic prompt.
-                            Tap to open the picker. */}
-                        {editingDiaryRef.current && (
+                        {/* Mood chip — diary-only AND gated on MOOD_TAGGING
+                            (unlocks on the first diary entry). Five vibe icons,
+                            optional. Absent until unlocked; fades in after. */}
+                        {editingDiaryRef.current && moodTaggingUnlocked && (
                           (() => {
                             const m = editorMood ? MOOD_BY_ID[editorMood] : null;
                             const chipColor = m?.color ?? artAccent;
                             return (
+                              <Animated.View entering={FadeIn.duration(300)}>
                               <TouchableOpacity
                                 onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setMoodPickerVisible(v => !v); }}
                                 style={{ flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: hexToRgba(chipColor, 0.15), paddingHorizontal: 12, paddingVertical: 6, borderRadius: 100 }}
@@ -1682,21 +1791,85 @@ export default function NotesScreen() {
                                   {m?.label ?? 'Mood'}
                                 </Text>
                               </TouchableOpacity>
+                              </Animated.View>
                             );
                           })()
                         )}
-                        {/* Seal hidden for diary entries — sealing a diary
-                            entry would mean a memory locked away from the
-                            same diary view it lives in. Capsules are for
-                            messages-to-future-self, diary is for memories;
-                            mixing the modes muddies both. */}
+                        {/* Seal pill — toggles into a lit state when a seal
+                            date has been chosen for this session. Tapping the
+                            lit pill re-opens the dial pre-filled with the
+                            chosen date so the user can edit it or pick "Don't
+                            seal." Hidden for diary entries (sealing a diary
+                            memory would lock it away from the very view it
+                            lives in). */}
+                        {/* Gated on SEALING (10 days since install). Hidden for
+                            diary entries either way. Before unlock we show a
+                            SUBTLE tease in-place rather than hiding it: a small
+                            timer + day count above a muted, non-interactive
+                            "Seal" pill — the one feature we let the user
+                            anticipate, sitting exactly where it'll live once
+                            earned. At unlock the active pill fades in. */}
                         {!editingDiaryRef.current && (
-                          <TouchableOpacity onPress={handleOpenSealModal} style={{ backgroundColor: hexToRgba(artAccent, 0.1), paddingHorizontal: 14, paddingVertical: 6, borderRadius: 100 }}>
-                              <Text style={{ color: artAccent, fontWeight: "900", fontSize: 13 }}>Seal</Text>
-                          </TouchableOpacity>
+                          sealingUnlocked ? (
+                            <Animated.View entering={FadeIn.duration(300)}>
+                            <TouchableOpacity
+                              onPress={handleOpenSealModal}
+                              style={pendingSealMs
+                                ? { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: artAccent, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 100 }
+                                : { backgroundColor: hexToRgba(artAccent, 0.1), paddingHorizontal: 14, paddingVertical: 6, borderRadius: 100 }}
+                            >
+                              {pendingSealMs ? (
+                                <>
+                                  <Feather name="lock" size={11} color="#FFF" />
+                                  <Text style={{ color: '#FFF', fontWeight: '900', fontSize: 13 }}>
+                                    Sealing · {formatDisplayDate(pendingSealMs, calendarType).split(' ').slice(0, 2).join(' ')}
+                                  </Text>
+                                </>
+                              ) : (
+                                <Text style={{ color: artAccent, fontWeight: "900", fontSize: 13 }}>Seal</Text>
+                              )}
+                            </TouchableOpacity>
+                            </Animated.View>
+                          ) : (
+                            <View style={{ alignItems: 'center', gap: 4 }}>
+                              {/* Countdown to the reveal, in the feature's accent. */}
+                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                                <Feather name="clock" size={9} color={hexToRgba(artAccent, 0.9)} />
+                                <Text style={{ color: hexToRgba(artAccent, 0.9), fontSize: 10, fontWeight: '900', letterSpacing: 0.3 }}>{sealingDaysLeft}d</Text>
+                              </View>
+                              {/* The locked capability itself reads as sealed: a lock
+                                  glyph + accent-tinted, bordered pill (vs. the plain
+                                  "Seal" text once it actually unlocks). */}
+                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: hexToRgba(artAccent, 0.12), borderWidth: 1, borderColor: hexToRgba(artAccent, 0.35), paddingHorizontal: 12, paddingVertical: 5, borderRadius: 100 }}>
+                                <Feather name="lock" size={10} color={hexToRgba(artAccent, 0.85)} />
+                                <Text style={{ color: hexToRgba(artAccent, 0.85), fontWeight: '900', fontSize: 12, letterSpacing: 0.2 }}>Seal</Text>
+                              </View>
+                            </View>
+                          )
                         )}
-                        <TouchableOpacity onPress={() => saveNote(false)} style={{ backgroundColor: theme.textMain, paddingHorizontal: 14, paddingVertical: 6, borderRadius: 100 }}>
-                            <Text style={{ color: theme.bg, fontWeight: "900", fontSize: 13 }}>Commit</Text>
+                        <TouchableOpacity
+                          onPress={async () => {
+                            // Commit branches on whether the user queued a seal
+                            // intent this session. With a pending date, we save
+                            // as a sealed capsule AND schedule the unlock
+                            // notification (same identifier scheme the focus
+                            // reconciliation uses to re-anchor it across
+                            // timezone changes). Without one, regular save.
+                            const seal = pendingSealMs && pendingSealMs > Date.now();
+                            const noteId = saveNote(!!seal, seal ? pendingSealMs! : 0);
+                            if (seal && noteId) {
+                              try {
+                                await Notifications.scheduleNotificationAsync({
+                                  identifier: `${CAPSULE_NOTIF_PREFIX}${noteId}`,
+                                  content: { title: "A message from your past self is ready.", body: "A Time Capsule you sealed has been unlocked.", sound: true },
+                                  trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: new Date(pendingSealMs!), channelId: CAPSULE_CHANNEL_ID },
+                                });
+                              } catch (e) { console.warn("Failed to schedule capsule notification:", e); }
+                            }
+                          }}
+                          style={{ backgroundColor: theme.textMain, paddingHorizontal: 14, paddingVertical: 6, borderRadius: 100 }}
+                        >
+                          <Text style={{ color: theme.bg, fontWeight: "900", fontSize: 13 }}>Commit</Text>
                         </TouchableOpacity>
                     </View>
                   </View>
@@ -1723,11 +1896,18 @@ export default function NotesScreen() {
                           reader paints it with that translucent background.
                           Default-color highlights skip the {color} prefix to
                           keep notes that only use yellow looking clean. */}
-                      <TouchableOpacity onPress={toggleHighlightColors} style={s.toolBtn}>
-                        <View style={{ paddingHorizontal: 4, paddingVertical: 1, borderRadius: 3, backgroundColor: hexToRgba(HIGHLIGHT_COLORS[DEFAULT_HIGHLIGHT_COLOR], HIGHLIGHT_ALPHA) }}>
-                          <Text style={{ fontWeight: "900", fontSize: 14, color: theme.textMain, letterSpacing: 0.5 }}>H</Text>
-                        </View>
-                      </TouchableOpacity>
+                      {/* Highlight tool gated on HIGHLIGHT_COLORS (3 notes).
+                          Absent before unlock; the rest of the markdown
+                          toolbar stays. */}
+                      {highlightColorsUnlocked ? (
+                        <Animated.View entering={FadeIn.duration(300)}>
+                          <TouchableOpacity onPress={toggleHighlightColors} style={s.toolBtn}>
+                            <View style={{ paddingHorizontal: 4, paddingVertical: 1, borderRadius: 3, backgroundColor: hexToRgba(HIGHLIGHT_COLORS[DEFAULT_HIGHLIGHT_COLOR], HIGHLIGHT_ALPHA) }}>
+                              <Text style={{ fontWeight: "900", fontSize: 14, color: theme.textMain, letterSpacing: 0.5 }}>H</Text>
+                            </View>
+                          </TouchableOpacity>
+                        </Animated.View>
+                      ) : null}
                       <View style={s.divider} />
                       <TouchableOpacity onPress={toggleColors} style={{ flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: "rgba(150,150,150,0.1)", paddingHorizontal: 12, paddingVertical: 8, borderRadius: 100 }}>
                         <View style={{ width: 16, height: 16, borderRadius: 8, backgroundColor: noteColor }} />
@@ -1759,7 +1939,9 @@ export default function NotesScreen() {
                 </View>
 
                 {/* ── SCROLLABLE: title, category, media, templates, body ── */}
-                <ScrollView style={{ flex: 1 }} keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled">
+                <KeyboardAwareScrollView
+                  bottomOffset={48}
+                  style={{ flex: 1 }} keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled">
                   {/* Title + Category */}
                   <View style={{ paddingHorizontal: 24, paddingTop: 20, paddingBottom: 8 }}>
                     <TextInput style={[s.titleInput, { color: theme.textMain }, persianSafeInputStyle, rtlInputStyle(lineDirectionText(noteTitle))]} placeholder="Untitled Thought" placeholderTextColor={theme.border} value={noteTitle} onChangeText={setNoteTitle} onFocus={() => { if (editorImageUris.length > 0 || editorAudio.length > 0) setMediaCollapsed(true); }} />
@@ -1869,16 +2051,13 @@ export default function NotesScreen() {
                     onFocus={() => { if (editorImageUris.length > 0 || editorAudio.length > 0) setMediaCollapsed(true); }}
                     scrollEnabled={false}
                   />
-                  {/* Extra slack at the bottom so the active line never hugs
-                      the keyboard — gives the user 1-2 lines of headroom to
-                      keep typing without manually scrolling. Tuned at ~400px:
-                      keyboard-avoidance lifts the view by keyboard height,
-                      this adds further gap on top of that lift. */}
-                  <View style={{ height: isKeyboardOpen ? 400 : 40 }} />
-                </ScrollView>
-              </KeyboardAvoidingView>
+                  {/* Small bottom slack; KeyboardAwareScrollView itself lifts the
+                      focused caret above the keyboard (bottomOffset above). */}
+                  <View style={{ height: isKeyboardOpen ? 80 : 40 }} />
+                </KeyboardAwareScrollView>
               </SafeAreaView>
             </View>
+            </KeyboardProvider>
           </Modal>
 
           {/* DIARY ENTRY ACTIONS — long-press on a diary entry opens this
@@ -1954,7 +2133,7 @@ export default function NotesScreen() {
                 <View style={{ width: 40, height: 5, borderRadius: 3, backgroundColor: theme.border, alignSelf: 'center', marginBottom: 18 }} />
                 <Text style={{ color: theme.textMain, fontSize: 20, fontWeight: '900', letterSpacing: -0.4, marginBottom: 4 }}>Diary settings</Text>
                 <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '600', marginBottom: 20 }}>
-                  Tied to this device. Defers all auth to your phone's lock system.
+                  Tied to this device. Defers all auth to your phone&apos;s lock system.
                 </Text>
                 <View style={{ backgroundColor: theme.bg, borderRadius: 14, paddingHorizontal: 16, paddingVertical: 14, flexDirection: 'row', alignItems: 'center', gap: 12 }}>
                   <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: theme.surface, alignItems: 'center', justifyContent: 'center' }}>
@@ -2257,39 +2436,37 @@ export default function NotesScreen() {
                     </Text>
                   </View>
 
+                  {/* The modal now SETS pending-seal state instead of saving
+                      immediately. The actual sealing + notification scheduling
+                      happen when the user taps Commit on the editor — see the
+                      Commit handler below. "Don't seal" only renders when a
+                      date was previously chosen this session, giving the user
+                      a clean way to back out of the sealing intent without
+                      having to close the editor. */}
                   <View style={{ flexDirection: "row", gap: 12 }}>
                     <TouchableOpacity onPress={() => setIsSealing(false)} style={{ flex: 1, paddingVertical: 16, borderRadius: 100, backgroundColor: theme.bg, alignItems: "center", borderWidth: 1, borderColor: theme.border }}>
                       <Text style={{ color: theme.textMain, fontWeight: "800", fontSize: 16 }}>Cancel</Text>
                     </TouchableOpacity>
                     <TouchableOpacity
                       disabled={isPast}
-                      onPress={async () => {
+                      onPress={() => {
                         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                        // saveNote returns the persisted noteId so we can use a
-                        // stable, target-cancellable identifier for the unlock
-                        // notification — focus reconciliation needs this to
-                        // re-anchor the schedule when the user changes timezone.
-                        const sealNoteId = saveNote(true, targetMs);
+                        setPendingSealMs(targetMs);
                         setIsSealing(false);
-                        // Schedule notification for unlock date
-                        try {
-                          if (sealNoteId && targetMs > Date.now()) {
-                            await Notifications.scheduleNotificationAsync({
-                              identifier: `${CAPSULE_NOTIF_PREFIX}${sealNoteId}`,
-                              content: { title: "A message from your past self is ready.", body: "A Time Capsule you sealed has been unlocked.", sound: true },
-                              // Route through the MAX-importance capsule-unlock channel so the
-                              // notification pops up as a heads-up banner rather than landing
-                              // silently in the tray — the moment a capsule unlocks is the moment.
-                              trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: new Date(targetMs), channelId: CAPSULE_CHANNEL_ID },
-                            });
-                          }
-                        } catch (e) { console.warn("Failed to schedule capsule notification:", e); }
                       }}
                       style={{ flex: 2, paddingVertical: 16, borderRadius: 100, backgroundColor: isPast ? theme.border : artAccent, alignItems: "center" }}
                     >
-                      <Text style={{ color: isPast ? theme.textSub : "#FFF", fontWeight: "900", fontSize: 16 }}>Lock Capsule</Text>
+                      <Text style={{ color: isPast ? theme.textSub : "#FFF", fontWeight: "900", fontSize: 16 }}>{pendingSealMs ? 'Update seal date' : 'Set seal date'}</Text>
                     </TouchableOpacity>
                   </View>
+                  {pendingSealMs ? (
+                    <TouchableOpacity
+                      onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setPendingSealMs(null); setIsSealing(false); }}
+                      style={{ marginTop: 12, paddingVertical: 12, alignItems: 'center' }}
+                    >
+                      <Text style={{ color: theme.textSub, fontSize: 13, fontWeight: '800' }}>Don&apos;t seal</Text>
+                    </TouchableOpacity>
+                  ) : null}
                 </View>
               </View>
             </View>
@@ -2375,7 +2552,7 @@ export default function NotesScreen() {
             <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.7)", justifyContent: "center", alignItems: "center", padding: 24 }}>
               <View style={{ backgroundColor: theme.surface, width: "100%", maxWidth: 340, borderRadius: 24, padding: 24, borderWidth: 1, borderColor: theme.border }}>
                 <Text style={{ color: theme.textMain, fontSize: 20, fontWeight: "900", marginBottom: 4 }}>Manage Group</Text>
-                <Text style={{ color: theme.textSub, fontSize: 13, fontWeight: "600", marginBottom: 20 }}>"{groupModal?.group}"</Text>
+                <Text style={{ color: theme.textSub, fontSize: 13, fontWeight: "600", marginBottom: 20 }}>&quot;{groupModal?.group}&quot;</Text>
                 <TextInput
                   value={renameText}
                   onChangeText={setRenameText}
@@ -2464,7 +2641,7 @@ export default function NotesScreen() {
             <View style={{ paddingHorizontal: 24, paddingTop: 10, paddingBottom: 16, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
               <Text style={{ fontSize: 28, fontWeight: "900", color: theme.textMain, letterSpacing: -1 }}>Vault.</Text>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 16 }}>
-                {vaultTab === "trash" && trashNotes.length > 0 && (<TouchableOpacity onPress={emptyTrash} hitSlop={10}><Text style={{ color: theme.danger, fontWeight: "800", fontSize: 14 }}>Empty All</Text></TouchableOpacity>)}
+                {vaultTab === "trash" && trashNotes.length > 0 && (<TouchableOpacity onPress={emptyTrash} hitSlop={10}><Text style={{ color: theme.danger, fontWeight: "800", fontSize: 14 }}>Purge all</Text></TouchableOpacity>)}
                 <TouchableOpacity onPress={() => vaultSheetRef.current?.dismiss()} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}><Feather name="x" size={24} color={theme.textMain} /></TouchableOpacity>
               </View>
             </View>

@@ -19,10 +19,23 @@ export type Theme = {
   isDark: boolean;
 };
 
-export function getTheme(dark: boolean): Theme {
-  return dark
-    ? { bg: '#000000', surface: '#0A0A0A', border: '#1A1A1A', textMain: '#FFFFFF', textSub: '#666666', danger: '#F43F5E', success: '#10B981', freeze: '#F59E0B', isDark: true }
-    : { bg: '#F8F9FA', surface: '#FFFFFF', border: '#E5E5EA', textMain: '#111111', textSub: '#888888', danger: '#F43F5E', success: '#10B981', freeze: '#F59E0B', isDark: false };
+// Three app themes: a calm light, a softened "graphite" dark (the old pure-black
+// #000 read as too harsh), and a VSCode-ish deep-navy "blue". blue counts as a
+// dark theme (isDark: true) so status bars and every isDark branch behave.
+export type ThemeMode = 'light' | 'dark' | 'blue';
+
+export function getTheme(mode: ThemeMode | boolean): Theme {
+  // Tolerate the legacy boolean (true→dark, false→light) so any caller that
+  // hasn't moved to themeMode yet keeps working during the migration.
+  const m: ThemeMode = mode === true ? 'dark' : mode === false ? 'light' : mode;
+  switch (m) {
+    case 'blue':
+      return { bg: '#0B1A2B', surface: '#122A40', border: '#1E3A52', textMain: '#E8F0F8', textSub: '#7FA0BC', danger: '#F43F5E', success: '#10B981', freeze: '#F59E0B', isDark: true };
+    case 'dark':
+      return { bg: '#121214', surface: '#1C1C20', border: '#2C2C30', textMain: '#F4F4F5', textSub: '#8A8A92', danger: '#F43F5E', success: '#10B981', freeze: '#F59E0B', isDark: true };
+    default:
+      return { bg: '#F8F9FA', surface: '#FFFFFF', border: '#E5E5EA', textMain: '#111111', textSub: '#888888', danger: '#F43F5E', success: '#10B981', freeze: '#F59E0B', isDark: false };
+  }
 }
 
 /**

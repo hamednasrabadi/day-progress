@@ -131,6 +131,29 @@ export function DiaryView({
     return [...base].sort((a, b) => dateOf(b) - dateOf(a));
   }, [notes, searchQuery]);
 
+  // "On This Day" — entries written on this calendar date in previous years.
+  // Day One's most-praised feature. Cheap to compute since entries are already
+  // date-keyed. Computed BEFORE the empty-state early return below so the hook
+  // count can't change when the diary flips between empty and non-empty (React:
+  // "rendered fewer hooks than expected"). Match by month + day (ignoring year).
+  const onThisDay = useMemo(() => {
+    if (searchQuery.trim()) return [];
+    const now = new Date();
+    const tm = now.getMonth();
+    const td = now.getDate();
+    const ty = now.getFullYear();
+    return sorted
+      .filter(n => {
+        const d = new Date(dateOf(n));
+        return d.getMonth() === tm && d.getDate() === td && d.getFullYear() < ty;
+      })
+      .map(n => {
+        const d = new Date(dateOf(n));
+        const yearsAgo = ty - d.getFullYear();
+        return { note: n, yearsAgo };
+      });
+  }, [sorted, searchQuery]);
+
   if (sorted.length === 0) {
     const isFiltered = searchQuery.trim().length > 0;
     return (
@@ -147,7 +170,7 @@ export function DiaryView({
             onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); onCreate(); }}
             style={{ backgroundColor: theme.textMain, paddingHorizontal: 28, paddingVertical: 14, borderRadius: 100 }}
           >
-            <Text style={{ color: theme.bg, fontSize: 14, fontWeight: '900', letterSpacing: 0.3 }}>Write today's entry</Text>
+            <Text style={{ color: theme.bg, fontSize: 14, fontWeight: '900', letterSpacing: 0.3 }}>Write today&apos;s entry</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -166,27 +189,6 @@ export function DiaryView({
     return d.getTime() === todayMs;
   });
   const showTodayCard = !searchQuery.trim() && !hasTodayEntry;
-
-  // "On This Day" — entries written on this calendar date in previous years.
-  // Day One's most-praised feature. Cheap to compute since entries are
-  // already date-keyed. We match by month + day (ignoring year), then group
-  // by year so the user sees "1 year ago", "3 years ago", etc.
-  const onThisDay = useMemo(() => {
-    if (searchQuery.trim()) return [];
-    const tm = todayDate.getMonth();
-    const td = todayDate.getDate();
-    const ty = todayDate.getFullYear();
-    return sorted
-      .filter(n => {
-        const d = new Date(dateOf(n));
-        return d.getMonth() === tm && d.getDate() === td && d.getFullYear() < ty;
-      })
-      .map(n => {
-        const d = new Date(dateOf(n));
-        const yearsAgo = ty - d.getFullYear();
-        return { note: n, yearsAgo };
-      });
-  }, [sorted, searchQuery, todayDate]);
 
   return (
     <ScrollView
@@ -302,7 +304,7 @@ export function DiaryView({
                   letterSpacing: -0.3,
                 }}
               >
-                What's on your mind?
+                What&apos;s on your mind?
               </Text>
             </View>
             <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: theme.textMain, justifyContent: 'center', alignItems: 'center', marginLeft: 12 }}>

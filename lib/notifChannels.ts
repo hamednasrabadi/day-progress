@@ -6,9 +6,6 @@
  * HIGH/MAX importance so notifications surface as a heads-up banner over the
  * current screen rather than sitting silently in the tray.
  *
- * Timeline has its own channel setup in lib/timelineNotifications.ts since it
- * needs both an alerts channel and a low-importance pinned "Now Playing" one.
- *
  * On iOS this is a no-op — heads-up presentation is controlled by
  * setNotificationHandler in app/_layout.tsx (already returns shouldShowBanner).
  */
@@ -24,6 +21,11 @@ export const CAPSULE_CHANNEL_ID  = 'capsule-unlock';
 // channel from task-reminders so the user can mute one without losing the
 // other, and so notification grouping reads cleanly.
 export const REMINDER_CHANNEL_ID = 'quick-reminders';
+// Challenge deadlines — approaching warnings + the expiry notice. Its own
+// channel so the user can mute deadline pressure without losing other
+// reminders. MAX importance: a deadline closing is exactly when the app
+// should interrupt.
+export const CHALLENGE_CHANNEL_ID = 'challenge-deadlines';
 
 let ready = false;
 
@@ -59,6 +61,14 @@ export async function ensureAppChannels(): Promise<void> {
   // 5-minute timer wants the OS to interrupt them — it's the whole point.
   await Notifications.setNotificationChannelAsync(REMINDER_CHANNEL_ID, {
     name: 'Reminders',
+    importance: Notifications.AndroidImportance.MAX,
+    sound: 'default',
+  });
+
+  // Challenge deadlines — fired by expo-notifications. MAX importance: the
+  // whole point of a commitment is that the deadline pressure reaches you.
+  await Notifications.setNotificationChannelAsync(CHALLENGE_CHANNEL_ID, {
+    name: 'Challenge deadlines',
     importance: Notifications.AndroidImportance.MAX,
     sound: 'default',
   });

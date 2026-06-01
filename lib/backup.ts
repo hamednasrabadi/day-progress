@@ -25,23 +25,25 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { Platform } from 'react-native';
 import { useAppStore } from '../store/useAppStore';
+import { sanitizeStateSlice } from './sanitize';
 
 // Bump this whenever the schema shape changes in a way that needs migration.
 //   v1: original — single `notes` array, included diaryEntries + preferences.
 //   v2: notes split into Regular / Capsules / Private; diaryEntries dropped
 //       (incomplete feature, returns with Notes-tab rework); all preferences
 //       dropped (user re-configures on a fresh device).
-export const CURRENT_VERSION = 2;
+//   v3: progressive-unlock meta added (unlock state, counters, promiseStats) —
+//       always-included, never user-selectable. v2 files lack these keys; the
+//       v2→v3 migration is a no-op since applyBackup skips undefined meta.
+export const CURRENT_VERSION = 3;
 
 // What goes in a backup file. Data only — no preferences or app-internal
 // state. Notes are split by category so the picker can offer "Capsules" vs
 // "Private notes" as distinct rows; the underlying store keeps a single
 // `notes` array, so applyBackup merges sub-categories back together by id.
 export type BackupPayload = {
-  // Timeline-ish data
-  activities?: any[];
+  // Timeline-ish data — the kept slices (rehomed into Habits in Phase 1).
   intents?: any[];
-  dayNotes?: any[];
   dayLog?: Record<string, any>;
   weeklyReflections?: Record<string, any>;
   // Tasks
@@ -59,7 +61,46 @@ export type BackupPayload = {
   notesRegular?: any[];   // status='active', !isSealed, !isLocked
   notesCapsules?: any[];  // isSealed
   notesPrivate?: any[];   // isLocked && !isSealed
+
+  // ── Meta (always included, never user-selectable) ──
+  // Progressive-unlock state + counters + lifetime stats. These ride along
+  // with EVERY backup and restore unconditionally — the user never sees them
+  // in the picker and never chooses to include/exclude them. Without this, a
+  // restored backup would lose the user's unlock standing (re-locking earned
+  // features, re-showing dots/whispers, resetting the day counter).
+  unlockedFeatures?: Record<string, boolean>;
+  dotsSeen?: Record<string, boolean>;
+  allFeaturesUnlocked?: boolean;
+  installDate?: string | null;
+  lastKnownDate?: string | null;
+  whispersSeen?: Record<string, boolean>;
+  totalTasksCreated?: number;
+  totalNotesCreated?: number;
+  diaryEntriesCreated?: number;
+  totalBlocksCreated?: number;
+  dayRatingsCount?: number;
+  activeDaysWithBlock?: number;
+  lastActiveDayCounted?: string | null;
+  totalHabitsCreated?: number;
+  maxSingleHabitCompletions?: number;
+  dayConqueredEver?: boolean;
+  totalChallengesCreated?: number;
+  promiseStats?: any;
+  introSeen?: boolean;
 };
+
+// Meta slices that ALWAYS travel with a backup and ALWAYS restore, regardless
+// of which content the user selected. Kept out of ALL_KEYS so they never
+// appear in the picker. installDate is preserved from the file on restore
+// (never reset) — that's the unlock spec's requirement.
+const META_KEYS = [
+  'unlockedFeatures', 'dotsSeen', 'allFeaturesUnlocked',
+  'installDate', 'lastKnownDate', 'whispersSeen',
+  'totalTasksCreated', 'totalNotesCreated', 'diaryEntriesCreated',
+  'totalBlocksCreated', 'dayRatingsCount', 'activeDaysWithBlock', 'lastActiveDayCounted',
+  'totalHabitsCreated', 'maxSingleHabitCompletions', 'dayConqueredEver',
+  'totalChallengesCreated', 'promiseStats', 'introSeen',
+] as const;
 
 export type BackupEnvelope = {
   // Schema version this file was written against
@@ -78,8 +119,9 @@ export type BackupEnvelope = {
 // backed up — the user re-configures those on a fresh device, and removing
 // them keeps the picker focused on actual data.
 export const ALL_KEYS = [
-  // Timeline
-  'activities', 'intents', 'dayNotes', 'dayLog', 'weeklyReflections',
+  // Timeline keepers — rehomed into Habits in Phase 1. (activities / dayNotes /
+  // birthdays were cut in the calm pivot; the v5 persist migration strips them.)
+  'intents', 'dayLog', 'weeklyReflections',
   // Tasks
   'tasks', 'projects',
   // Habits
@@ -123,9 +165,7 @@ export function noteMatchesKey(note: any, key: BackupKey): boolean {
 // Human-readable labels for each slice — used by the import UI's checklist.
 // Keep this aligned with ALL_KEYS; the picker iterates these in order.
 export const KEY_LABELS: Record<BackupKey, string> = {
-  activities:        'Timeline blocks',
   intents:           'Intents',
-  dayNotes:          'Day notes',
   dayLog:            'Day ratings',
   weeklyReflections: 'Weekly reflections',
   tasks:             'Tasks',
@@ -172,7 +212,10 @@ export const TAB_GROUPS: BackupTab[] = [
   {
     id: 'timeline',
     label: 'Timeline',
-    keys: ['activities', 'intents', 'dayNotes', 'dayLog', 'weeklyReflections'],
+    // activities / dayNotes / birthdays were cut in the calm pivot (Phase 0).
+    // The remaining three are rehomed into Habits in Phase 1, where this
+    // group's label moves with them.
+    keys: ['intents', 'dayLog', 'weeklyReflections'],
   },
   {
     id: 'tasks',
@@ -228,6 +271,12 @@ export async function exportBackup(opts?: { keys?: BackupKey[] }): Promise<{ ok:
         // launch user; dropping them keeps the file lean.)
         (payload as any)[key] = state[key];
       }
+    }
+    // Meta always rides along, regardless of selected keys — the user never
+    // chooses these. Even a "Tasks only" selective export carries the full
+    // unlock state so a restore can't strand the user mid-progression.
+    for (const mk of META_KEYS) {
+      if (state[mk] !== undefined) (payload as any)[mk] = state[mk];
     }
     const envelope: BackupEnvelope = {
       version: CURRENT_VERSION,
@@ -386,9 +435,21 @@ export function applyBackup(payload: BackupPayload, selectedKeys: BackupKey[]): 
     }
   }
 
+  // Meta always restores, regardless of what content the user selected — the
+  // unlock state must stay coherent with the data. Absent from older files
+  // (pre-v3); the undefined check skips those cleanly.
+  for (const mk of META_KEYS) {
+    if ((payload as any)[mk] !== undefined) {
+      slice[mk] = (payload as any)[mk];
+    }
+  }
+
   if (Object.keys(slice).length === 0) return;
+  // Normalize every imported slice to a safe shape before it reaches the live
+  // store — an old or foreign backup may carry habits/notes/slices missing the
+  // array fields current renderers assume, and setState writes them verbatim.
   // useAppStore.setState merges shallow — exactly what we want.
-  (useAppStore as any).setState(slice);
+  (useAppStore as any).setState(sanitizeStateSlice(slice));
 }
 
 // ─── MIGRATIONS ─────────────────────────────────────────────────────────
@@ -428,4 +489,8 @@ const MIGRATIONS: Record<number, (p: any) => any> = {
     delete out.lastEclipseVariation;
     return out;
   },
+  // v2 → v3: no shape changes. v3 only ADDED optional meta keys (unlock state,
+  // counters, promiseStats). A v2 file simply lacks them; applyBackup's
+  // undefined-check leaves the fresh-install defaults in place. Pure no-op.
+  2: (p) => p,
 };

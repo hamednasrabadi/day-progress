@@ -2,9 +2,43 @@ import { create } from 'zustand';
 import { persist, createJSONStorage, StateStorage } from 'zustand/middleware';
 import { createMMKV } from 'react-native-mmkv';
 import { Feather } from '@expo/vector-icons';
+// Imported for unlockAll's "mark every dot/whisper seen" loop. Circular —
+// lib/unlocks.ts imports useAppStore — but resolved safely: lib/unlocks only
+// USES useAppStore inside function bodies, never at top-level eval, so the
+// live-binding completes by the time these closures run.
+import { ALL_FEATURE_IDS } from '../lib/unlocks';
+// Runtime-only edge (habitScore imports just the Habit *type* from here, which
+// is erased at compile time — no circular dependency at runtime).
+import { isDayConquered } from '../lib/habitScore';
+import { sanitizeStateSlice } from '../lib/sanitize';
 
 // ─── STORAGE ───
 export const storage = createMMKV({ id: 'titan-storage' });
+
+// The persisted zustand store key. The trailing version starts a fresh store
+// when bumped; older bumps leave orphaned full-store blobs in this same MMKV
+// instance under their old names.
+const STORAGE_NAME = 'titan-app-storage-v28';
+
+// One-time housekeeping on cold start: drop the orphaned blobs left by older
+// STORAGE_NAME versions (titan-app-storage-v1..v27) that no current code reads,
+// then trim() so MMKV actually reclaims the freed disk + memory (it does not
+// shrink the file on its own after deletes). Best-effort + idempotent — a no-op
+// once nothing stale remains.
+try {
+  const stale = storage.getAllKeys().filter((k) => /^titan-app-storage-v\d+$/.test(k) && k !== STORAGE_NAME);
+  if (stale.length) {
+    for (const k of stale) storage.remove(k);
+    storage.trim();
+  }
+} catch {}
+
+// ── Unlock whisper queue item ─────────────────────────────────────────────
+// One whisper in the global announcement queue. featureIds are the unlock
+// IDs this whisper represents; dismissing it marks each one as seen. The
+// 3+-collapse case produces a single whisper with the union of all queued
+// IDs and a generic message.
+export type UnlockWhisper = { featureIds: string[]; message: string };
 
 const zustandStorage: StateStorage = {
   setItem: (name, value) => storage.set(name, value),
@@ -12,12 +46,21 @@ const zustandStorage: StateStorage = {
   removeItem: (name) => storage.remove(name),
 };
 
+// Local calendar date as YYYY-MM-DD (mirrors getFormatDateStr in the habits
+// tab — minute-offset trick so the user's local day is what gets stored).
+const localDateStr = (d: Date = new Date()): string => {
+  const x = new Date(d);
+  x.setMinutes(x.getMinutes() - x.getTimezoneOffset());
+  return x.toISOString().slice(0, 10);
+};
+
 // ─── HABIT TYPES ───
-export type HabitStatus = 'active' | 'archived';
+export type HabitStatus = 'active' | 'archived' | 'retired';
 export type TimeBlock = 'morning' | 'afternoon' | 'evening' | 'anytime';
 
 export type Habit = {
   id: string; title: string; color: string; icon: keyof typeof Feather.glyphMap;
+  description?: string; // optional "why" / context, shown in the detail view
   history: string[]; restDays: string[]; skippedDays: string[]; createdAt: number;
   targetCount: number; unit: string;
   scheduleType: 'days' | 'interval'; frequency: string[];
@@ -25,6 +68,16 @@ export type Habit = {
   hasReminder?: boolean; reminderTime?: string;
   timeBlock: TimeBlock; status: HabitStatus;
   completionNotes?: Record<string, string>;
+  // Set when status === 'retired'. retiredAt (YYYY-MM-DD) freezes the strength
+  // score at the moment of retirement (no penalties accrue afterward). vanished
+  // hides the trophy from the Retired screen — but the frozen score is STILL
+  // counted in the grade (we respect past effort either way).
+  retiredAt?: string;
+  vanished?: boolean;
+  // Long-pause (archive) windows. Each [from, to) range is a stretch the habit
+  // sat archived; scoring SKIPS those days (no penalty), so a pause freezes the
+  // score instead of tanking it. An open range (no `to`) = currently archived.
+  pausedRanges?: { from: string; to?: string }[];
 };
 
 // ─── TASK TYPES ───
@@ -149,40 +202,9 @@ export interface Note {
   entryDate?: number;
 }
 
-// ─── TIMELINE TYPES ───
-// Previously stored in AsyncStorage under '@timeline_activities_v6' and
-// '@command_day_log_v1'. Now lives in the Zustand store (MMKV-backed) so:
-//   1. All tabs can read timeline data without AsyncStorage calls.
-//   2. Activities are included in the future app-wide export system.
-//   3. Notification preferences no longer need separate AsyncStorage keys.
-
-export type Activity = {
-  id: string;
-  groupId?: string;
-  day: string;        // 'Monday', 'Tuesday', etc. — week-day name (used when scheduledDate is absent)
-  startHour: number;  // decimal hours, e.g. 9.5 = 09:30
-  endHour: number;    // decimal hours; endHour < startHour = block bleeds past midnight
-  color: string;
-  label: string;
-  hasReminder?: boolean;
-  isHype?: boolean;   // deep-work / high-intensity marker
-  // Anchored — this block is fixed in time and won't be auto-shifted when other blocks
-  // run over or end early. Used by the (still-being-designed) plan-vs-reality reflow logic
-  // to decide which blocks the algorithm is allowed to move. Default false.
-  isLocked?: boolean;
-  // When set (YYYY-MM-DD), the block happens only on that specific date, overriding weekly `day` recurrence.
-  scheduledDate?: string;
-  // ── Effective-date versioning (past-immutability) ──────────────────────────────
-  // `effectiveFrom`: first YYYY-MM-DD this version is visible. Created today → today's date.
-  //                  Legacy activities (migrated) get '2000-01-01' so they render everywhere.
-  // `effectiveUntil`: first YYYY-MM-DD this version is NO LONGER visible (exclusive). Set when the
-  //                   activity is edited or deleted — the old version is retained with this field
-  //                   set so past-date renders keep showing what was truly scheduled.
-  // Render filter: `effectiveFrom <= renderDate AND (!effectiveUntil || effectiveUntil > renderDate)`
-  effectiveFrom?: string;
-  effectiveUntil?: string;
-};
-
+// ─── DAY RATING ───
+// The per-day "how did today go?" rating (strong / ok / rough). Lives on the
+// Habits home now (the end-of-day check-in); MMKV-backed in the Zustand store.
 export type DayRating = 'strong' | 'ok' | 'rough';
 export type DayLog = Record<string, DayRating>; // key = YYYY-MM-DD
 
@@ -202,15 +224,66 @@ export type Milestone = { id: string; text: string; completed: boolean; };
 // `note` is migrated into a single entry.
 export type NoteEntry = { id: string; text: string; createdAt: number; };
 
+// How a challenge is meant to be worked, which changes what "on pace" and
+// "the chain" mean:
+//   daily      — one unit per day (meditate 30 days). A chain that can break.
+//   cumulative — a total reached at any rate (read 12 books). No daily chain.
+//   oneshot    — do the thing once (ship one thing). Target is 1, no pace.
+export type ChallengeCadence = 'daily' | 'cumulative' | 'oneshot';
+
+// A habit→challenge link. Completing the habit (to its own target for the day)
+// can auto-advance the challenge by `increment`, but only when `autoAdvance`
+// is on — the user decides per link.
+export type ChallengeLink = { habitId: string; autoAdvance: boolean; increment: number };
+
+// One progress event in a challenge's history. `source` records where the
+// log came from so the ledger can read "Logged +2" vs "Habit · +1".
+export type LedgerSource = 'manual' | 'habit' | 'deepwork' | 'bulk';
+export type LedgerEntry = { id: string; ts: number; delta: number; source: LedgerSource };
+
+// One ledger entry, stamped now. Shared by every progress path (manual taps,
+// bulk log, habit auto-advance, deep-work) so the history reads consistently.
+export function makeLedgerEntry(delta: number, source: LedgerSource): LedgerEntry {
+  return { id: `lg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`, ts: Date.now(), delta, source };
+}
+
+// ── The Ledger ──────────────────────────────────────────────────────────────
+// A stake the user holds: a reward to claim or a punishment to pay. Auto-added
+// from a won challenge (its reward) or a buried one (its punishment), or by
+// hand. `sourceId` is the challenge it came from, used to dedup auto-adds.
+export type StakeKind = 'reward' | 'punishment';
+export interface Stake { id: string; kind: StakeKind; text: string; done: boolean; createdAt: number; doneAt?: number; sourceId?: string }
+export function makeStake(kind: StakeKind, text: string, sourceId?: string): Stake {
+  return { id: `stk_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`, kind, text: text.trim(), done: false, createdAt: Date.now(), sourceId };
+}
+
+// Best-effort cadence guess for migrations and for new challenges until the
+// editor exposes an explicit picker. Day-unit challenges read as daily;
+// single-target ones as one-shot; everything else accrues cumulatively.
+export function inferChallengeCadence(target?: number, unit?: string): ChallengeCadence {
+  if ((unit || '').toLowerCase().includes('day')) return 'daily';
+  if (target === 1) return 'oneshot';
+  return 'cumulative';
+}
+
 export type Challenge = {
   id: string; title: string; icon: any;
   color: string; current: number; target: number; unit: string;
   deadlineTs?: number; reward?: string; punishment?: string;
   urgencyStyle?: UrgencyStyle;
+  cadence?: ChallengeCadence;
   createdAt: number; milestones?: Milestone[];
+  // `links` is the live model (per-habit auto-advance + increment).
+  // `linkedHabitIds` is the legacy flat list, kept only so the v2→v3
+  // migration and any un-migrated import can be read; new code writes `links`.
+  links?: ChallengeLink[];
   linkedHabitIds?: string[]; deadState: DeadState;
   reviewedAt?: number; buriedAt?: number; achievedAt?: number;
   deletedAt?: number; wasResurrected?: boolean;
+  // Set true the first time a dead challenge is resurrected, and never cleared —
+  // so its "one more attempt" can't be reused, even after it's buried and later
+  // re-opened from the graveyard. Resurrection is once per challenge, for good.
+  resurrectedBefore?: boolean;
   // Static "what is this challenge about" copy — set once when the
   // challenge is created and rarely edited. Distinct from noteEntries,
   // which is a journal log that grows over time.
@@ -222,6 +295,10 @@ export type Challenge = {
   lastLoggedAt?: number;
   // YYYY-MM-DD strings of each progress log — powers the momentum strip
   logDates?: string[];
+  // Timestamped progress history — every +N / -N event with its source.
+  // Renders as the detail view's ledger ("Logged +2 · Wed 3:47 PM"). Backfilled
+  // from logDates on migration; written live by the progress paths (Phase 4).
+  ledger?: LedgerEntry[];
   // Capsule-locked finish: ID of a sealed Note that unlocks when this challenge
   // transitions to 'achieved'. The note carries the matching unlockOnChallengeId.
   linkedCapsuleNoteId?: string;
@@ -311,33 +388,15 @@ export type Intent = {
 // to any day that isn't today or tomorrow. Multiple notes per day are allowed
 // — each one is a separate row. No completion state; notes are just there.
 //
-// Distinct from DiaryEntry: DiaryEntry was reflection-text bound to a *past*
-// date (a thought you logged that day). DayNote is forward-or-backward looking
-// reference text bound to *any* date.
-export type DayNote = {
-  id: string;
-  date: string;       // YYYY-MM-DD
-  text: string;       // free-form
-  createdAt: number;
-};
-
 // ─── WEEKLY REFLECTION ────────────────────────────────────────────────────
 // One reflection per ISO week, captured on the user's chosen end-of-week
-// day (Friday or Saturday). The card prompt shows the rating breakdown for
-// the week ("5 Strong, 1 Steady, 1 Off") and asks for a single free-text
-// reflection. If 3+ Off days landed, a warm-words note appears AFTER the
-// user submits — the app responds to what they said, not pre-judges it.
-export type EndOfWeekDay = 'friday' | 'saturday';
+// day (Friday or Sunday — Friday for Iranian users, Sunday everywhere else).
+// The card prompt shows the rating breakdown for the week ("5 Strong, 1
+// Steady, 1 Off") and asks for a single free-text reflection. If 3+ Off days
+// landed, a warm-words note appears AFTER the user submits — the app responds
+// to what they said, not pre-judges it.
+export type EndOfWeekDay = 'friday' | 'sunday';
 
-// Quick reminder — captured from the Timeline bell icon. No project, no
-// urgency, no recurrence: just text + a moment. Notification is scheduled at
-// add-time; entry is swept after fireAt + grace period passes.
-export type Reminder = {
-  id: string;
-  text: string;
-  fireAt: number;     // absolute timestamp ms
-  createdAt: number;
-};
 export type WeeklyReflection = {
   id: string;             // ISO week key (YYYY-Www) — e.g. 2026-W18
   weekKey: string;        // same as id; mirrored for clarity
@@ -347,186 +406,62 @@ export type WeeklyReflection = {
 };
 
 // ─── DEFAULT DATA ───
-const NOW = Date.now();
-const DAY_MS = 86400000;
 
-// Default habits — seed a new user's first week.
-// Picked to show: all 4 time blocks, both schedule types, targetCount > 1,
-// and a mix of universal habits that don't assume anything about the user.
-const DEFAULT_HABITS: Habit[] = [
-  // Morning — daily, simple, evocative
-  {
-    id: 'h_sunrise', title: 'Sunrise ritual', timeBlock: 'morning', color: '#F59E0B', icon: 'sunrise',
-    history: [], restDays: [], skippedDays: [], createdAt: NOW, targetCount: 1, unit: 'moment',
-    scheduleType: 'days', frequency: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], status: 'active'
-  },
-  // Anytime — demonstrates multi-count badge (3 glasses / day)
-  {
-    id: 'h_water', title: 'Drink water', timeBlock: 'anytime', color: '#06B6D4', icon: 'droplet',
-    history: [], restDays: [], skippedDays: [], createdAt: NOW, targetCount: 3, unit: 'glasses',
-    scheduleType: 'days', frequency: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], status: 'active'
-  },
-  // Afternoon — demonstrates partial-week schedule
-  {
-    id: 'h_move', title: 'Move', timeBlock: 'afternoon', color: '#10B981', icon: 'activity',
-    history: [], restDays: [], skippedDays: [], createdAt: NOW, targetCount: 1, unit: 'session',
-    scheduleType: 'days', frequency: ['Mon', 'Wed', 'Fri', 'Sat'], status: 'active'
-  },
-  // Evening — daily, closes the day
-  {
-    id: 'h_read', title: 'Read', timeBlock: 'evening', color: '#8B5CF6', icon: 'book-open',
-    history: [], restDays: [], skippedDays: [], createdAt: NOW, targetCount: 1, unit: 'block',
-    scheduleType: 'days', frequency: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], status: 'active'
-  },
-];
-
-const DEFAULT_PROJECTS: Project[] = [
-  { id: 'p_core', name: 'Core Operations', color: '#64748B', createdAt: NOW },
-  { id: 'p_beta', name: 'Beta Launch', color: '#F59E0B', createdAt: NOW }
-];
-
-const DEFAULT_TASKS: Task[] = [
-  { 
-    id: 't_guide', 
-    text: 'Calibrate your system.', 
-    notes: 'Welcome to your Command Center.\n\n- Tap a card to edit it.\n- Swipe left to archive.\n- The Pulse tab tracks your relentless execution.', 
-    completed: false, createdAt: NOW, deadlineDate: '', deadlineTime: '', hasReminder: false, 
-    priority: 'High', color: '#F59E0B', subTasks: [], hasProgress: false, progress: 0, 
-    recurType: 'none', lastTouchedAt: NOW 
-  },
-  { 
-    id: 't_beta', 
-    text: 'Finalize beta tester invites.', 
-    notes: 'Draft the email and send out the TestFlight/APK links to the core group.', 
-    completed: false, createdAt: NOW, deadlineDate: '', deadlineTime: '', hasReminder: false, 
-    priority: 'High', color: '#8B5CF6', subTasks: [], hasProgress: false, progress: 0, 
-    projectId: 'p_beta', recurType: 'none', lastTouchedAt: NOW 
-  },
-  { 
-    id: 't_review', 
-    text: 'Weekly System Review', 
-    notes: 'Clear the mental cache before Monday.', 
-    completed: false, createdAt: NOW, deadlineDate: '', deadlineTime: '', hasReminder: false, 
-    priority: 'Medium', color: '#3B82F6', 
-    subTasks: [
-      { id: 's1', text: 'Inbox to zero', completed: false },
-      { id: 's2', text: 'Review calendar for next week', completed: false },
-      { id: 's3', text: 'Update metrics', completed: false }
-    ], 
-    hasProgress: true, progress: 0, projectId: 'p_core', recurType: 'weekly', recurDays: ['Sun'], 
-    lastTouchedAt: NOW 
-  },
-];
-
-
-const ALL_WEEK_DAYS = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
-
-// Mirrors the previous AsyncStorage seed from index.tsx exactly.
-// New installs get this. Existing installs that had AsyncStorage data
-// should run a one-time migration on first open (see timeline.tsx).
-export const DEFAULT_ACTIVITIES: Activity[] = ALL_WEEK_DAYS.flatMap((day, i) => [
-  { id: `def-1-${i}`, groupId: 'g-1', day, startHour: 9,    endHour: 11,   color: '#8B5CF6', label: 'Deep Focus Block',        isHype: true, hasReminder: true },
-  { id: `def-2-${i}`, groupId: 'g-2', day, startHour: 11.5, endHour: 12.5, color: '#F59E0B', label: 'Communications & Sync' },
-  { id: `def-3-${i}`, groupId: 'g-3', day, startHour: 14,   endHour: 17,   color: '#3B82F6', label: 'Project Execution' },
-  { id: `def-4-${i}`, groupId: 'g-4', day, startHour: 18,   endHour: 19,   color: '#10B981', label: 'Movement / Disconnect' },
-  { id: `def-5-${i}`, groupId: 'g-5', day, startHour: 21,   endHour: 22,   color: '#64748B', label: 'Reading & Reflection' },
-]);
-
-export const DEFAULT_NOTES: Note[] = [
-  {
-    id: "guide_welcome", title: "Start here.", group: undefined,
-    isPinned: true, isLocked: false, color: "#8B5CF6",
-    order: 0, status: "active", createdAt: NOW,
-    content: `Your workspace. No cloud. No account. Everything stays on this device.
-
-# Gestures
-- Tap to expand. Tap again to collapse.
-- Swipe left → archive
-- Swipe right → trash
-- Long-press a group chip → rename or remove it
-
-# Writing tools
-[ ] Checkboxes toggle on tap
-[x] Like this
-- Bullets format automatically
-# Headings structure long notes
-
-The toolbar gives you images, voice memos, and markdown shortcuts. Templates appear when you start a blank note.`,
-  },
-  {
-    id: "guide_log", title: "Daily Log — Example", group: "work",
-    isPinned: false, isLocked: false, color: "#10B981",
-    order: 1, status: "active", createdAt: NOW - DAY_MS,
-    content: `# Morning
-- Cleared inbox, 3 urgent threads
-- Backend blocked on auth — escalated
-[ ] Follow up on API keys
-[ ] Review PR before EOD
-
-# Afternoon
-[x] Shipped the onboarding redesign
-[x] Roadmap shift: performance before features
-
-# Evening
-[ ] Write meeting notes
-[ ] Update project board`,
-  },
-  {
-    id: "guide_locked", title: "This is private.", group: undefined,
-    isPinned: false, isLocked: true, color: "#F43F5E",
-    order: 2, status: "active", createdAt: NOW - 3 * DAY_MS,
-    content: `Locked with biometrics. Nobody reads this but you.
-
-Tap the lock icon in the card footer to lock or unlock any note. Locked notes live behind the Locked filter — separated from everything else.
-
-Journals. Passwords. Unsent messages. Whatever you need hidden.`,
-  },
-  {
-    id: "guide_capsule", title: "A note to my future self", group: "capsules",
-    isPinned: false, isLocked: false, isSealed: true,
-    unlockDate: NOW + DAY_MS * 180, color: "#8B5CF6",
-    order: 3, status: "active", createdAt: NOW,
-    content: `Six months from now you'll read this.
-
-What did you build? Did the thing you were anxious about even matter? Are you still showing up?
-
-I sealed this because I wanted proof that time passes and things change. Even when it doesn't feel like it.`,
-  },
-  {
-    id: "guide_ideas", title: "Ideas dump", group: "ideas",
-    isPinned: false, isLocked: false, color: "#2DD4BF",
-    order: 4, status: "active", createdAt: NOW - 2 * DAY_MS,
-    content: `# Capture everything. Filter later.
-
-- Offline-first sync engine using CRDTs
-- Widget showing today's habit streak
-- App that tracks what you lend to people
-- Receipt scanner with auto-categorization
-
-[ ] Sketch the best idea this weekend
-[ ] Kill the rest or commit`,
-  },
-];
+// ── Seed/example content removed (2026-05-29) ──────────────────────────────
+// The app ships EMPTY now. Pre-filled demo habits/tasks/projects/timeline
+// blocks/notes used to onboard the user by example, but they contradict the
+// progressive-unlock model — they'd showcase features (and explain gestures)
+// the user hasn't unlocked yet, and the seed capsule pre-empted the Sealed
+// Messages reveal. Kept as named empty arrays so a future onboarding pass can
+// reintroduce curated content from a single place if desired.
+const DEFAULT_HABITS: Habit[] = [];
+const DEFAULT_PROJECTS: Project[] = [];
+const DEFAULT_TASKS: Task[] = [];
+export const DEFAULT_NOTES: Note[] = [];
 
 // ─── APP STATE INTERFACE ───
 
 interface AppState {
   // ── Settings ──
   isDarkMode: boolean;
+  // Three-way theme: 'light' | 'dark' (graphite) | 'blue' (deep navy). isDarkMode
+  // is kept as a mirror (true for dark + blue) so legacy readers keep working.
+  themeMode: 'light' | 'dark' | 'blue';
   calendarType: CalendarSystem;
   toggleTheme: () => void;
+  setThemeMode: (m: 'light' | 'dark' | 'blue') => void;
   toggleCalendar: () => void;
 
   // ── Habits ──
   habits: Habit[];
   addOrUpdateHabit: (habit: Habit) => void;
   deleteHabit: (id: string) => void;
+  // Retire a habit: it leaves the active list but its earned score stays in the
+  // grade, frozen at retiredAt. keep=false ("vanish") hides it from the Retired
+  // screen but still counts. retiredAt is a YYYY-MM-DD local date from the caller.
+  retireHabit: (id: string, keep: boolean, retiredAt: string) => void;
+  // Bring a retired habit back to active. The retired stretch is recorded as a
+  // pause window so it doesn't retroactively penalize the score (resumes from
+  // the frozen value); retiredAt/vanished are cleared.
+  unretireHabit: (id: string, todayStr: string) => void;
   updateHabitStatus: (id: string, status: HabitStatus) => void;
   toggleHabitAction: (
     id: string,
     action: 'done' | 'pending' | 'rest' | 'skipped',
     dateStr: string,
   ) => void;
+
+  // ── Habit unlock counters (monotonic) ──
+  // totalHabitsCreated → PACT (>=3). (Vault/archive is ungated, ships on.)
+  // maxSingleHabitCompletions: highest lifetime completion total of any one
+  //   habit → COMPLETION_NOTES (>=5). Maintained inside toggleHabitAction.
+  // dayConqueredEver: latches true on the first fully-conquered day (every
+  //   scheduled habit done on a day with 3+ habits) → STRENGTH_SCORE.
+  //   Maintained inside toggleHabitAction (see isDayConquered).
+  totalHabitsCreated: number;
+  incrementTotalHabitsCreated: () => void;
+  maxSingleHabitCompletions: number;
+  dayConqueredEver: boolean;
 
   // ── Tasks & Projects ──
   tasks: Task[];
@@ -535,6 +470,14 @@ interface AppState {
   setProjects: (projects: Project[]) => void;
   addOrUpdateProject: (project: Project) => void;
   deleteProject: (id: string) => void;
+
+  // Monotonic counter — increments once at every user-initiated task creation
+  // (quick-add, save-from-sheet new path, void easter egg). Never decrements:
+  // deleting / archiving / completing doesn't roll it back. Powers the
+  // totalTasksCreated unlock trigger so "progress toward the next gate" isn't
+  // lost when the user clears their list.
+  totalTasksCreated: number;
+  incrementTotalTasksCreated: () => void;
 
   // ── Promise stats ── lifetime + monthly counters for Kept/Broken/Made.
   // The UI calls these from three places:
@@ -560,16 +503,36 @@ interface AppState {
   toggleNotePin: (id: string) => void;
   updateNoteContent: (id: string, newContent: string) => void;
 
-  // ── Timeline ──
-  activities: Activity[];
-  setActivities: (activities: Activity[]) => void;
-  addOrUpdateActivity: (activity: Activity) => void;
-  deleteActivity: (id: string) => void;
-  deleteActivityGroup: (groupId: string) => void;
+  // ── Notes unlock counters (monotonic, never decrement) ──
+  // totalNotesCreated: one tick per new note → DIARY + HIGHLIGHT_COLORS (>=3).
+  // diaryEntriesCreated: one tick per new diary entry → MOOD_TAGGING (>=1).
+  totalNotesCreated: number;
+  incrementTotalNotesCreated: () => void;
+  diaryEntriesCreated: number;
+  incrementDiaryEntriesCreated: () => void;
 
   dayLog: DayLog;
   setDayLog: (log: DayLog) => void;
   logDayRating: (dateStr: string, rating: DayRating) => void;
+
+  // ── Timeline unlock counters (monotonic, never decrement) ──
+  // totalBlocksCreated: one tick per NEW block committed in the add-block
+  //   modal (a recurring block that fans out to several weekday records still
+  //   counts once — it's one user action). Drives SMART_SUGGESTIONS +
+  //   FOCUS_BLOCK_RUNNER (>= 3).
+  // dayRatingsCount: one tick per day-rating submission. Drives DAILY_REVIEW
+  //   (>= 3).
+  // activeDaysWithBlock: distinct calendar days on which the schedule had at
+  //   least one block. lastActiveDayCounted guards against double-counting a
+  //   day — markActiveDayWithBlock(today) is a no-op if today was already
+  //   counted. Drives NOW_PLAYING (>= 5).
+  totalBlocksCreated: number;
+  incrementTotalBlocksCreated: () => void;
+  dayRatingsCount: number;
+  incrementDayRatingsCount: () => void;
+  activeDaysWithBlock: number;
+  lastActiveDayCounted: string | null;
+  markActiveDayWithBlock: (dateStr: string) => void;
 
   globalNotifsEnabled: boolean;
   preNotifOffset: number;
@@ -585,22 +548,70 @@ interface AppState {
   navRevealCount: number;
   incrementNavRevealCount: () => void;
 
+  // ── Progressive feature unlocks ──────────────────────────────────────
+  // unlockedFeatures: feature ID → has its trigger fired. Once true, stays
+  //   true. No lock() exists anywhere in the codebase — rule.
+  // dotsSeen: feature ID → user has interacted with the newly-unlocked
+  //   element (or unlockAll silenced it). Drives the small blue "new" dot.
+  // allFeaturesUnlocked: returning-user override. Short-circuits isUnlocked
+  //   to true for everything. Set by the "Restore your experience" button.
+  // installDate / lastKnownDate: ISO calendar dates (YYYY-MM-DD). installDate
+  //   stamps on first launch and never moves. lastKnownDate advances
+  //   monotonically on each foreground event so backward clock manipulation
+  //   can't roll the day counter back.
+  // whisperQueue: pending whisper announcements. Component reads head, user
+  //   dismisses to advance. Queue collapses at length >= 3 into one combined
+  //   whisper to avoid spam.
+  // whispersSeen: Record<string, boolean> — replaces the legacy string[]
+  //   shape. Lookup is now O(1) and aligned with dotsSeen.
+  unlockedFeatures: Record<string, boolean>;
+  dotsSeen: Record<string, boolean>;
+  allFeaturesUnlocked: boolean;
+  installDate: string | null;
+  lastKnownDate: string | null;
+  whisperQueue: UnlockWhisper[];
+  // First-launch growth intro. Shown once on the very first open; sets the
+  // expectation that the app reveals itself over time (so a power user who
+  // can't find a feature day-one understands why rather than churning). The
+  // intro also offers the "show me everything" fork → unlockAll(). Travels
+  // in the backup meta so a restoring user isn't shown it again.
+  introSeen: boolean;
+  setIntroSeen: (v: boolean) => void;
+  unlock: (featureId: string) => void;
+  unlockAll: () => void;
+  markDotSeen: (featureId: string) => void;
+  setInstallDate: (date: string) => void;
+  setLastKnownDate: (date: string) => void;
+  enqueueWhisper: (featureIds: string[], message: string) => void;
+  dismissCurrentWhisper: () => void;
+
   // ── Habits extras ──
-  lastWeeklyReviewDismissed?: string;
-  setLastWeeklyReviewDismissed: (dateStr: string) => void;
   setHabitCompletionNote: (habitId: string, dateStr: string, note: string) => void;
 
   // ── Whispers — each key fires exactly once, ever ──
-  whispersSeen?: string[];
+  // Record<string, boolean> shape so lookup is O(1) and matches dotsSeen.
+  // Legacy string[] callers were converted to `!!whispersSeen[key]`.
+  whispersSeen?: Record<string, boolean>;
   markWhisperSeen: (key: string) => void;
 
-  // ── Day Conquered (eclipse overlay) — track last variation to avoid repeats ──
-  lastEclipseVariation?: string;
-  setLastEclipseVariation: (key: string) => void;
+  // Day Conquered celebration — the calendar date (YYYY-MM-DD) the eclipse
+  // last played. Persisted so the celebration fires once per day and never
+  // replays just because the Habits tab remounted (its in-memory ref guard
+  // resets on remount, which made the eclipse re-show every time you opened
+  // the tab on an already-conquered day).
+  lastDayConqueredCelebrated?: string;
+  setLastDayConqueredCelebrated: (dateStr: string) => void;
 
-  // ── Pact preferences ──
-  pactAutoNote?: boolean; // default true — auto-create a failure note in Notes
-  setPactAutoNote: (v: boolean) => void;
+  // "Go for more" — secret early-finish easter egg (EXPERIMENTAL, ships OFF via
+  // GO_FOR_MORE_ENABLED in habits.tsx). goForMoreIgnores counts how many times
+  // the moment was let to pass; at 3 it retires permanently (goForMoreRetired).
+  // goForMoreLastShown gates it to once per calendar day. These persist so the
+  // "goes dark forever" promise survives restarts.
+  goForMoreIgnores?: number;
+  goForMoreRetired?: boolean;
+  goForMoreLastShown?: string;
+  recordGoForMoreShown: (dateStr: string) => void;
+  recordGoForMoreIgnored: () => void;
 
   // ── The Pact ──
   pact?: {
@@ -623,6 +634,10 @@ interface AppState {
   setChallenges: (challenges: Challenge[]) => void;
   achievements: Achievement[];
   setAchievements: (achievements: Achievement[]) => void;
+  // Monotonic — one tick per challenge created → MILESTONES (>=1). Active
+  // count (for LINKED_HABITS >=2) is derived in the root snapshot, not stored.
+  totalChallengesCreated: number;
+  incrementTotalChallengesCreated: () => void;
   // The Challenges tab is gated behind a multi-criteria unlock — see
   // LockScreen in challenges.tsx. Once flipped true, it stays true (no
   // automatic re-locking on metric drop). Persisting via the main store
@@ -630,6 +645,10 @@ interface AppState {
   // useState made the flag effectively meaningless.
   challengesUnlocked: boolean;
   setChallengesUnlocked: (v: boolean) => void;
+  // First-appearance timestamp for the day-2 Challenges teaser — drives the
+  // literal 24h countdown to the conditions reveal (null until the tab appears).
+  challengesTeaserSeenAt: number | null;
+  setChallengesTeaserSeenAt: (ts: number) => void;
   // True once the default seed challenges have been inserted (or skipped
   // because the user already had data). Without this, the seed effect
   // re-runs on every "challenges array empty" — meaning a user who
@@ -637,6 +656,19 @@ interface AppState {
   // Set once, never cleared.
   challengesSeeded: boolean;
   setChallengesSeeded: (v: boolean) => void;
+
+  // ── The Ledger — stakes you hold: rewards to claim, punishments to pay. ──
+  // A won challenge auto-adds its reward; a buried (failed, finalized) one its
+  // punishment. Checked off when settled. addStake dedups auto-adds by sourceId.
+  stakes: Stake[];
+  addStake: (kind: StakeKind, text: string, sourceId?: string) => void;
+  toggleStake: (id: string) => void;
+  removeStake: (id: string) => void;
+  // Set true the first time any challenge ends (won or dead). The Ledger entry
+  // then stays available for good — you get it once you actually need it, and
+  // can keep adding stakes by hand thereafter.
+  ledgerUnlocked: boolean;
+  setLedgerUnlocked: (v: boolean) => void;
 
   // ── Deep Work ──
   deepWorkSessions: DeepWorkSession[];
@@ -689,21 +721,10 @@ interface AppState {
   diaryLocked: boolean;
   setDiaryLocked: (v: boolean) => void;
 
-  // ── Quick reminders ──
-  // Lightweight one-shot reminders. The notification *is* the reminder — no
-  // task/intent/activity record. Once `fireAt` passes, the entry is auto-swept
-  // by Timeline's focus pass (see lib/reminderNotifications.ts), so the list
-  // stays self-pruning and users don't accumulate dead reminders.
-  reminders: Reminder[];
-  addReminder: (r: Reminder) => void;
-  removeReminder: (id: string) => void;
-  pruneFiredReminders: () => void;
-
-  // ── Day notes ── date-bound reference text (e.g. "John's birthday")
-  dayNotes: DayNote[];
-  addDayNote: (note: DayNote) => void;
-  updateDayNote: (id: string, text: string) => void;
-  deleteDayNote: (id: string) => void;
+  // One-time migration flag: cancels orphaned yearly birthday notifications
+  // after the Birthdays feature was cut (calm-pivot). Driven from app/_layout.tsx.
+  birthdayNotifsPurged: boolean;
+  markBirthdayNotifsPurged: () => void;
 
   // ── Reflection acknowledgement ──
   // Set of `${YYYY-MM-DD}_${activityId}` keys for committed blocks the user
@@ -713,6 +734,14 @@ interface AppState {
   // unbounded growth across years of use.
   reflectedKeys: string[];
   markReflected: (key: string) => void;
+
+  // ── Reset user data ──
+  // Wipes all user-generated content (tasks, notes, habits, challenges,
+  // history, etc.) back to seed defaults while preserving settings, the
+  // unlock slice, and persist metadata. Used by the returning-user
+  // "Start fresh" path so a long-time tester can land on a clean app
+  // without losing their unlock state.
+  resetUserData: () => void;
 }
 
 // ─── CREATE STORE ───
@@ -722,8 +751,12 @@ export const useAppStore = create<AppState>()(
     (set) => ({
       // ── Settings ──
       isDarkMode: false,
+      themeMode: 'light',
       calendarType: 'shamsi',
-      toggleTheme: () => set((s) => ({ isDarkMode: !s.isDarkMode })),
+      // toggleTheme flips light↔dark and keeps themeMode/isDarkMode in sync; the
+      // 3-way picker in Settings uses setThemeMode for the blue (navy) option.
+      toggleTheme: () => set((s) => { const next = s.themeMode === 'light' ? 'dark' : 'light'; return { themeMode: next, isDarkMode: next !== 'light' }; }),
+      setThemeMode: (m) => set({ themeMode: m, isDarkMode: m !== 'light' }),
       toggleCalendar: () => set((s) => ({
         calendarType: s.calendarType === 'shamsi' ? 'gregorian' : 'shamsi',
       })),
@@ -739,11 +772,42 @@ export const useAppStore = create<AppState>()(
         };
       }),
       deleteHabit: (id) => set((s) => ({ habits: s.habits.filter(h => h.id !== id) })),
-      updateHabitStatus: (id, status) => set((s) => ({
-        habits: s.habits.map(h => h.id === id ? { ...h, status } : h),
+      retireHabit: (id, keep, retiredAt) => set((s) => ({
+        habits: s.habits.map(h => h.id === id ? { ...h, status: 'retired' as HabitStatus, retiredAt, vanished: !keep } : h),
       })),
-      toggleHabitAction: (id, action, dateStr) => set((s) => ({
+      unretireHabit: (id, todayStr) => set((s) => ({
         habits: s.habits.map(h => {
+          if (h.id !== id) return h;
+          const pausedRanges = [...(h.pausedRanges || [])];
+          // Treat the time spent retired as a pause so scoring skips it (no
+          // penalty) and the score resumes from where it froze.
+          if (h.retiredAt && h.retiredAt < todayStr) pausedRanges.push({ from: h.retiredAt, to: todayStr });
+          return { ...h, status: 'active' as HabitStatus, retiredAt: undefined, vanished: undefined, pausedRanges };
+        }),
+      })),
+      updateHabitStatus: (id, status) => set((s) => {
+        const today = localDateStr();
+        return {
+          habits: s.habits.map(h => {
+            if (h.id !== id) return h;
+            let pausedRanges = h.pausedRanges ? [...h.pausedRanges] : [];
+            if (status === 'archived' && h.status !== 'archived') {
+              // Entering a long-pause — open a range from today.
+              pausedRanges.push({ from: today });
+            } else if (status === 'active' && h.status === 'archived') {
+              // Returning — close the most recent open range. Scoring skips the
+              // [from, today) gap, so the score resumes from its frozen value
+              // and the streak (which can't bridge the gap) starts fresh.
+              for (let i = pausedRanges.length - 1; i >= 0; i--) {
+                if (!pausedRanges[i].to) { pausedRanges[i] = { ...pausedRanges[i], to: today }; break; }
+              }
+            }
+            return { ...h, status, pausedRanges };
+          }),
+        };
+      }),
+      toggleHabitAction: (id, action, dateStr) => set((s) => {
+        const habits = s.habits.map(h => {
           if (h.id !== id) return h;
           let newHistory = [...h.history];
           let newRest = [...(h.restDays || [])].filter(d => d !== dateStr);
@@ -763,14 +827,49 @@ export const useAppStore = create<AppState>()(
             }
           }
           return { ...h, history: newHistory, restDays: newRest, skippedDays: newSkipped };
-        }),
-      })),
+        });
+
+        // ── Habit unlock counters (monotonic) ──
+        // maxSingleHabitCompletions: highest lifetime completion total across
+        // habits → COMPLETION_NOTES (>=5). Only grows; undoing a completion or
+        // deleting a habit can't lower it.
+        let maxSingle = s.maxSingleHabitCompletions ?? 0;
+        for (const h of habits) {
+          if (h.history.length > maxSingle) maxSingle = h.history.length;
+        }
+        // dayConqueredEver: latches true the first time a day is fully
+        // "conquered" — every scheduled active habit done/skipped/rested on a
+        // day with 3+ habits (see isDayConquered) → STRENGTH_SCORE. Checked
+        // only on a 'done' action (the completion that could close the day).
+        let dayConqueredEver = s.dayConqueredEver ?? false;
+        if (!dayConqueredEver && action === 'done' && isDayConquered(habits, dateStr)) {
+          dayConqueredEver = true;
+        }
+
+        return { habits, maxSingleHabitCompletions: maxSingle, dayConqueredEver };
+      }),
+
+      // ── Habit unlock counters ──
+      totalHabitsCreated: 0,
+      incrementTotalHabitsCreated: () => set((s) => ({ totalHabitsCreated: (s.totalHabitsCreated ?? 0) + 1 })),
+      maxSingleHabitCompletions: 0,
+      dayConqueredEver: false,
+      // ── Challenge unlock counter ──
+      totalChallengesCreated: 0,
+      incrementTotalChallengesCreated: () => set((s) => ({ totalChallengesCreated: (s.totalChallengesCreated ?? 0) + 1 })),
 
       // ── Tasks & Projects ──
       tasks: DEFAULT_TASKS,
       projects: DEFAULT_PROJECTS,
       setTasks: (tasks) => set({ tasks }),
       setProjects: (projects) => set({ projects }),
+
+      // Monotonic creation counter for the SUBTASKS / RECURRING / PROJECTS
+      // total-based triggers. Callers in todo.tsx wrap their task-creation
+      // logic with this; it never decrements.
+      totalTasksCreated: 0,
+      incrementTotalTasksCreated: () => set((s) => ({ totalTasksCreated: (s.totalTasksCreated ?? 0) + 1 })),
+
       addOrUpdateProject: (project) => set((s) => {
         const exists = s.projects.find(p => p.id === project.id);
         return {
@@ -853,6 +952,10 @@ export const useAppStore = create<AppState>()(
       // ── Notes ──
       notes: DEFAULT_NOTES,
       setNotes: (notes) => set({ notes }),
+      totalNotesCreated: 0,
+      incrementTotalNotesCreated: () => set((s) => ({ totalNotesCreated: (s.totalNotesCreated ?? 0) + 1 })),
+      diaryEntriesCreated: 0,
+      incrementDiaryEntriesCreated: () => set((s) => ({ diaryEntriesCreated: (s.diaryEntriesCreated ?? 0) + 1 })),
       addOrUpdateNote: (note) => set((s) => {
         const exists = s.notes.find(n => n.id === note.id);
         if (exists) {
@@ -899,29 +1002,38 @@ export const useAppStore = create<AppState>()(
         }),
       })),
 
-      // ── Timeline ──
-      activities: DEFAULT_ACTIVITIES,
-      setActivities: (activities) => set({ activities }),
-      addOrUpdateActivity: (activity) => set((s) => {
-        const exists = s.activities.find(a => a.id === activity.id);
-        return {
-          activities: exists
-            ? s.activities.map(a => a.id === activity.id ? activity : a)
-            : [...s.activities, activity],
-        };
-      }),
-      deleteActivity: (id) => set((s) => ({
-        activities: s.activities.filter(a => a.id !== id),
-      })),
-      deleteActivityGroup: (groupId) => set((s) => ({
-        activities: s.activities.filter(a => a.groupId !== groupId),
-      })),
-
       dayLog: {},
       setDayLog: (log) => set({ dayLog: log }),
-      logDayRating: (dateStr, rating) => set((s) => ({
-        dayLog: { ...s.dayLog, [dateStr]: rating },
-      })),
+      logDayRating: (dateStr, rating) => set((s) => {
+        // Count only the FIRST rating of a given day toward the unlock counter
+        // — re-rating (changing strong→rough) overwrites in dayLog but doesn't
+        // re-tick. Keeps dayRatingsCount == distinct days rated, monotonic.
+        const isFirstForDay = !s.dayLog[dateStr];
+        return {
+          dayLog: { ...s.dayLog, [dateStr]: rating },
+          dayRatingsCount: isFirstForDay ? (s.dayRatingsCount ?? 0) + 1 : (s.dayRatingsCount ?? 0),
+        };
+      }),
+
+      // ── Timeline unlock counters ──
+      totalBlocksCreated: 0,
+      incrementTotalBlocksCreated: () => set((s) => ({ totalBlocksCreated: (s.totalBlocksCreated ?? 0) + 1 })),
+      dayRatingsCount: 0,
+      // Standalone incrementer kept to satisfy the interface; the canonical
+      // tick lives inside logDayRating so the counter can't drift from the
+      // actual ratings. Unused at call sites by design.
+      incrementDayRatingsCount: () => set((s) => ({ dayRatingsCount: (s.dayRatingsCount ?? 0) + 1 })),
+      activeDaysWithBlock: 0,
+      lastActiveDayCounted: null,
+      markActiveDayWithBlock: (dateStr) => set((s) => {
+        // Idempotent per calendar day — only the first call for a given date
+        // advances the counter.
+        if (s.lastActiveDayCounted === dateStr) return {};
+        return {
+          activeDaysWithBlock: (s.activeDaysWithBlock ?? 0) + 1,
+          lastActiveDayCounted: dateStr,
+        };
+      }),
 
       globalNotifsEnabled: true,
       preNotifOffset: 5,
@@ -932,16 +1044,103 @@ export const useAppStore = create<AppState>()(
       setOngoingBlockEnabled: (v) => set({ ongoingBlockEnabled: v }),
       incrementNavRevealCount: () => set((s) => ({ navRevealCount: (s.navRevealCount ?? 0) + 1 })),
 
-      // ── Habits extras ──
-      setLastWeeklyReviewDismissed: (dateStr) => set({ lastWeeklyReviewDismissed: dateStr }),
-      markWhisperSeen: (key) => set((s) => {
-        const seen = s.whispersSeen || [];
-        if (seen.includes(key)) return {};
-        return { whispersSeen: [...seen, key] };
+      // ── Progressive unlocks ──
+      unlockedFeatures: {},
+      dotsSeen: {},
+      allFeaturesUnlocked: false,
+      installDate: null,
+      lastKnownDate: null,
+      whisperQueue: [],
+      introSeen: false,
+      setIntroSeen: (v) => set({ introSeen: v }),
+      unlock: (featureId) => set((s) => {
+        // Idempotent — already-unlocked features are no-ops, no spurious
+        // state change, no React re-render.
+        if (s.unlockedFeatures?.[featureId]) return {};
+        return {
+          unlockedFeatures: { ...(s.unlockedFeatures || {}), [featureId]: true },
+        };
       }),
-      setLastEclipseVariation: (key) => set({ lastEclipseVariation: key }),
-      pactAutoNote: true,
-      setPactAutoNote: (v) => set({ pactAutoNote: v }),
+      // Returning-user override. Flips the global switch AND fills in every
+      // tracked feature ID + marks every dot/whisper as seen, so the
+      // existing user lands on a fully-functional app with zero "new"
+      // indicators. Per spec: "returning user — nothing is new."
+      unlockAll: () => set((s) => {
+        const allUnlocked: Record<string, boolean> = { ...(s.unlockedFeatures || {}) };
+        const allDotsSeen: Record<string, boolean> = { ...(s.dotsSeen || {}) };
+        const allWhispersSeen: Record<string, boolean> = { ...(s.whispersSeen || {}) };
+        for (const id of ALL_FEATURE_IDS) {
+          allUnlocked[id] = true;
+          allDotsSeen[id] = true;
+          allWhispersSeen[id] = true;
+        }
+        return {
+          allFeaturesUnlocked: true,
+          unlockedFeatures: allUnlocked,
+          dotsSeen: allDotsSeen,
+          whispersSeen: allWhispersSeen,
+          // Clear any pending announcements — they'd contradict "nothing is new."
+          whisperQueue: [],
+        };
+      }),
+      markDotSeen: (featureId) => set((s) => {
+        if (s.dotsSeen?.[featureId]) return {};
+        return { dotsSeen: { ...(s.dotsSeen || {}), [featureId]: true } };
+      }),
+      setInstallDate: (date) => set((s) => {
+        // First-launch stamp. Once set it's immutable — the only path that
+        // overwrites is a backup restore (handled in lib/backup.ts).
+        if (s.installDate) return {};
+        return { installDate: date };
+      }),
+      // Monotonic advance only — `setLastKnownDate('2024-01-01')` after we've
+      // already seen '2024-06-15' is a no-op. Backward clock manipulation
+      // therefore can't lower the day counter.
+      setLastKnownDate: (date) => set((s) => {
+        if (s.lastKnownDate && date <= s.lastKnownDate) return {};
+        return { lastKnownDate: date };
+      }),
+      enqueueWhisper: (featureIds, message) => set((s) => {
+        // Filter featureIds the user has already seen. If every targeted ID
+        // is already seen, the whisper is suppressed entirely — the user
+        // doesn't need to be told twice.
+        const seen = s.whispersSeen || {};
+        const unseen = featureIds.filter(id => !seen[id]);
+        if (featureIds.length > 0 && unseen.length === 0) return {};
+        const next = [...(s.whisperQueue || []), { featureIds: unseen, message }];
+        // Collapse at 3+ pending. The combined whisper carries every original
+        // featureId so dismissal marks all of them seen at once.
+        if (next.length >= 3) {
+          const allIds = Array.from(new Set(next.flatMap(w => w.featureIds)));
+          return {
+            whisperQueue: [{ featureIds: allIds, message: 'Several new things are available.' }],
+          };
+        }
+        return { whisperQueue: next };
+      }),
+      // Pops the head whisper and marks every featureId on it as seen so the
+      // queue stays self-pruning without a separate ack step.
+      dismissCurrentWhisper: () => set((s) => {
+        const q = s.whisperQueue || [];
+        if (q.length === 0) return {};
+        const [head, ...rest] = q;
+        const seen = { ...(s.whispersSeen || {}) };
+        for (const id of head.featureIds) seen[id] = true;
+        return { whisperQueue: rest, whispersSeen: seen };
+      }),
+
+      // ── Habits extras ──
+      markWhisperSeen: (key) => set((s) => {
+        const seen = s.whispersSeen || {};
+        if (seen[key]) return {};
+        return { whispersSeen: { ...seen, [key]: true } };
+      }),
+      setLastDayConqueredCelebrated: (dateStr) => set({ lastDayConqueredCelebrated: dateStr }),
+      recordGoForMoreShown: (dateStr) => set({ goForMoreLastShown: dateStr }),
+      recordGoForMoreIgnored: () => set((s) => {
+        const n = (s.goForMoreIgnores ?? 0) + 1;
+        return { goForMoreIgnores: n, goForMoreRetired: n >= 3 };
+      }),
       setPact: (pact) => set({ pact }),
       setHabitCompletionNote: (habitId, dateStr, note) => set((s) => ({
         habits: s.habits.map(h => {
@@ -960,8 +1159,22 @@ export const useAppStore = create<AppState>()(
       setAchievements: (achievements) => set({ achievements }),
       challengesUnlocked: false,
       setChallengesUnlocked: (v) => set({ challengesUnlocked: v }),
+      challengesTeaserSeenAt: null,
+      setChallengesTeaserSeenAt: (ts) => set({ challengesTeaserSeenAt: ts }),
       challengesSeeded: false,
       setChallengesSeeded: (v) => set({ challengesSeeded: v }),
+      stakes: [],
+      addStake: (kind, text, sourceId) => set((s) => {
+        if (!text.trim()) return {};
+        // Auto-adds carry a sourceId (the challenge); dedup so a win/burial
+        // contributes at most one reward / one punishment.
+        if (sourceId && (s.stakes || []).some(x => x.sourceId === sourceId && x.kind === kind)) return {};
+        return { stakes: [makeStake(kind, text, sourceId), ...(s.stakes || [])] };
+      }),
+      toggleStake: (id) => set((s) => ({ stakes: (s.stakes || []).map(x => x.id === id ? { ...x, done: !x.done, doneAt: !x.done ? Date.now() : undefined } : x) })),
+      removeStake: (id) => set((s) => ({ stakes: (s.stakes || []).filter(x => x.id !== id) })),
+      ledgerUnlocked: false,
+      setLedgerUnlocked: (v) => set({ ledgerUnlocked: v }),
 
       // ── Deep Work ──
       deepWorkSessions: [],
@@ -1082,20 +1295,28 @@ export const useAppStore = create<AppState>()(
 
         let touched = false;
         const updatedChallenges = s.challenges.map(c => {
-          if (!c.linkedHabitIds?.includes(habitId)) return c;
+          // Resolve this habit's link config. Prefer the new `links` model;
+          // fall back to a legacy linkedHabitIds entry (treated as the old
+          // hardcoded auto-advance +1) so un-migrated data still advances.
+          const link = c.links?.find(l => l.habitId === habitId)
+            ?? (c.linkedHabitIds?.includes(habitId) ? { habitId, autoAdvance: true, increment: 1 } : undefined);
+          if (!link || !link.autoAdvance) return c;
           if (c.deadState !== 'active' && c.deadState !== 'resurrected') return c;
           if (c.current >= c.target) return c;
           const existingLogs = c.logDates || [];
           if (existingLogs.includes(dateStr)) return c;
 
           touched = true;
-          const newCurrent = Math.min(c.target, c.current + 1);
+          const inc = Math.max(1, Math.round(link.increment || 1));
+          const newCurrent = Math.min(c.target, c.current + inc);
+          const appliedDelta = newCurrent - c.current;
           const isAchieved = newCurrent >= c.target && c.deadState === 'active';
           return {
             ...c,
             current: newCurrent,
             lastLoggedAt: Date.now(),
             logDates: [...existingLogs, dateStr],
+            ledger: [...(c.ledger || []), makeLedgerEntry(appliedDelta, 'habit')],
             ...(isAchieved ? { deadState: 'achieved' as DeadState, achievedAt: Date.now() } : {}),
           };
         });
@@ -1108,33 +1329,18 @@ export const useAppStore = create<AppState>()(
       addWeeklyReflection: (r) => set((s) => ({
         weeklyReflections: { ...s.weeklyReflections, [r.weekKey]: r },
       })),
-      // Default end-of-week is Saturday — covers most Western users; Friday users
-      // can flip it from Settings. We deliberately don't auto-detect from locale
-      // because the user's preference here is more about ritual than calendar.
-      endOfWeekDay: 'saturday',
+      // Default end-of-week is Sunday — the common close-of-week worldwide;
+      // Iranian users can flip it to Friday from Settings. We deliberately
+      // don't auto-detect from locale because the user's preference here is
+      // more about ritual than calendar.
+      endOfWeekDay: 'sunday',
       setEndOfWeekDay: (d) => set({ endOfWeekDay: d }),
 
       diaryLocked: false,
       setDiaryLocked: (v) => set({ diaryLocked: v }),
 
-      // ── Quick reminders ──
-      reminders: [],
-      addReminder: (r) => set((s) => ({ reminders: [...s.reminders, r] })),
-      removeReminder: (id) => set((s) => ({ reminders: s.reminders.filter(r => r.id !== id) })),
-      // Sweep entries whose fire moment passed >2 minutes ago. The 2-min grace
-      // covers clock skew and keeps a just-fired reminder visible briefly so
-      // the user can see "yes, that one fired" if they happened to be in-app.
-      pruneFiredReminders: () => set((s) => ({
-        reminders: s.reminders.filter(r => r.fireAt > Date.now() - 2 * 60_000),
-      })),
-
-      // ── Day notes ──
-      dayNotes: [],
-      addDayNote: (note) => set((s) => ({ dayNotes: [...s.dayNotes, note] })),
-      updateDayNote: (id, text) => set((s) => ({
-        dayNotes: s.dayNotes.map(n => n.id === id ? { ...n, text } : n),
-      })),
-      deleteDayNote: (id) => set((s) => ({ dayNotes: s.dayNotes.filter(n => n.id !== id) })),
+      birthdayNotifsPurged: false,
+      markBirthdayNotifsPurged: () => set({ birthdayNotifsPurged: true }),
 
       // ── Reflection acknowledgement ──
       // Append-only with a hard cap. Newest at the end; on overflow we drop
@@ -1146,13 +1352,179 @@ export const useAppStore = create<AppState>()(
         if (next.length > 100) next.splice(0, next.length - 100);
         return { reflectedKeys: next };
       }),
+
+      // ── Reset user data ── for the "Start fresh" branch of the returning-
+      // user flow. Wipes user-generated content back to seed defaults but
+      // preserves: settings (theme, calendar, notif prefs, endOfWeekDay),
+      // the unlock slice (installDate, unlockedFeatures, etc.), and persist
+      // metadata. The returning-user flow calls unlockAll() AFTER this so
+      // the user lands on a fully-unlocked, empty app.
+      resetUserData: () => set({
+        habits: DEFAULT_HABITS,
+        totalHabitsCreated: 0,
+        maxSingleHabitCompletions: 0,
+        dayConqueredEver: false,
+        tasks: DEFAULT_TASKS,
+        projects: DEFAULT_PROJECTS,
+        totalTasksCreated: 0,
+        promiseStats: {
+          madeTotal: 0, keptTotal: 0, brokenTotal: 0,
+          monthKey: '', monthlyMade: 0, monthlyKept: 0, monthlyBroken: 0,
+        },
+        notes: DEFAULT_NOTES,
+        totalNotesCreated: 0,
+        diaryEntriesCreated: 0,
+        dayLog: {},
+        totalBlocksCreated: 0,
+        dayRatingsCount: 0,
+        activeDaysWithBlock: 0,
+        lastActiveDayCounted: null,
+        challenges: [],
+        totalChallengesCreated: 0,
+        achievements: [],
+        challengesSeeded: false,
+        deepWorkSessions: [],
+        diaryEntries: [],
+        intents: [],
+        weeklyReflections: {},
+        reflectedKeys: [],
+        whispersSeen: {},
+        lastDayConqueredCelebrated: undefined,
+        goForMoreIgnores: undefined,
+        goForMoreRetired: undefined,
+        goForMoreLastShown: undefined,
+        pact: undefined,
+      }),
     }),
     {
-      // Bumped to v21 — Activities and Timeline prefs now live here instead of AsyncStorage.
-      // On first launch after update, the old AsyncStorage keys are dead.
-      // timeline.tsx runs a one-time migration that reads the old keys and writes into the store.
-      name: 'titan-app-storage-v23',
+      // v23 → v24 reshapes the unlocks slice for the progressive-unlock
+      // foundation:
+      //   • whispersSeen: string[] → Record<string, boolean>
+      //   • unlocks       → unlockedFeatures
+      //   • unlocksAcknowledged → dotsSeen
+      //   • drops unlocksMigrated (no migration concept anymore — returning
+      //     users tap the "Restore your experience" link instead)
+      // Existing data is converted in-place; values from the old keys are
+      // preserved so a dev user's prior unlocks survive the bump.
+      name: STORAGE_NAME,
       storage: createJSONStorage(() => zustandStorage),
+      version: 8,
+      migrate: (persistedState: any, version: number) => {
+        if (!persistedState || typeof persistedState !== 'object') return persistedState;
+        let next: any = persistedState;
+        // v0 → v1: legacy unlock-key renames (dev installs predating the
+        // consolidated unlock store).
+        if (version < 1) {
+          next = { ...next };
+          // whispersSeen array → record
+          if (Array.isArray(next.whispersSeen)) {
+            const rec: Record<string, boolean> = {};
+            for (const k of next.whispersSeen) if (typeof k === 'string') rec[k] = true;
+            next.whispersSeen = rec;
+          }
+          // unlocks → unlockedFeatures (preserve any existing values)
+          if (next.unlocks && !next.unlockedFeatures) {
+            next.unlockedFeatures = next.unlocks;
+          }
+          delete next.unlocks;
+          // unlocksAcknowledged → dotsSeen
+          if (next.unlocksAcknowledged && !next.dotsSeen) {
+            next.dotsSeen = next.unlocksAcknowledged;
+          }
+          delete next.unlocksAcknowledged;
+          // unlocksMigrated has no analog in the new design
+          delete next.unlocksMigrated;
+        }
+        // v1 → v2: end-of-week 'saturday' option was removed in favor of
+        // 'sunday'. Anyone who had picked Saturday inherits Sunday.
+        if (version < 2) {
+          next = { ...next };
+          if (next.endOfWeekDay === 'saturday') next.endOfWeekDay = 'sunday';
+        }
+        // v2 → v3: Challenges redesign data model. Each challenge gains a
+        // cadence, a richer `links` array (replacing the flat linkedHabitIds),
+        // and a timestamped `ledger`. All additive — existing current/target
+        // counting is untouched; we only backfill the new fields so old
+        // challenges behave as before.
+        if (version < 3) {
+          next = { ...next };
+          if (Array.isArray(next.challenges)) {
+            next.challenges = next.challenges.map((c: any) => {
+              const out = { ...c };
+              if (!out.cadence) out.cadence = inferChallengeCadence(out.target, out.unit);
+              // linkedHabitIds → links (preserve today's hardcoded +1/auto behavior)
+              if (!Array.isArray(out.links)) {
+                out.links = Array.isArray(out.linkedHabitIds)
+                  ? out.linkedHabitIds.map((id: string) => ({ habitId: id, autoAdvance: true, increment: 1 }))
+                  : [];
+              }
+              // Backfill the ledger from logDates so old challenges aren't blank.
+              // Each known log day becomes a best-effort +1 at local noon (noon
+              // dodges DST/timezone edge cases on the date boundary).
+              if (!Array.isArray(out.ledger)) {
+                const dates: string[] = Array.isArray(out.logDates) ? out.logDates : [];
+                out.ledger = dates.map((d) => {
+                  const [y, m, day] = String(d).split('-').map(Number);
+                  const ts = new Date(y || 1970, (m || 1) - 1, day || 1, 12, 0, 0).getTime();
+                  return { id: `bk_${d}`, ts, delta: 1, source: 'manual' as LedgerSource };
+                });
+              }
+              return out;
+            });
+          }
+        }
+        // v3 → v4: formerly seeded ~1 year of fake challenges/achievements for
+        // dev evaluation. Removed for ship — challenges follow the real unlock
+        // arc and start empty. Slot kept as a no-op so the chain numbering stays
+        // stable for already-persisted stores.
+        // v4 → v5: the calm-pivot cut. Timeline and its satellite slices are
+        // being removed (Habits becomes home). Strip the cut slices out of the
+        // persisted blob so they don't linger as dead keys once their store
+        // fields + readers are deleted in Phase 2 — a returning user's old
+        // MMKV data won't carry an orphaned activities/dayNotes/birthdays.
+        // The KEEPERS being rehomed into Habits (intents, dayLog,
+        // weeklyReflections, endOfWeekDay) are deliberately left untouched so
+        // they survive the cut. Pure + idempotent: re-running just re-deletes
+        // already-absent keys. NOTE: birthday-notification cancellation rides
+        // with the Phase 2 Birthdays cut, not here — migrate stays
+        // side-effect-free. (Verified by scripts/verify-persist-migration.mjs.)
+        if (version < 5) {
+          next = { ...next };
+          delete next.activities;
+          delete next.dayNotes;
+          delete next.birthdays;
+        }
+        // v5 → v6: the Reminders feature was folded into per-habit reminders;
+        // its standalone slice is gone. Strip the now-dead `reminders` key so it
+        // doesn't linger in the persisted blob. (activities/dayNotes/birthdays
+        // were already stripped in v5.) Pure + idempotent.
+        if (version < 6) {
+          next = { ...next };
+          delete next.reminders;
+        }
+        // v6 → v7: theme went from a boolean (isDarkMode) to a 3-way themeMode
+        // ('light' | 'dark' | 'blue'). Derive themeMode from the old boolean so
+        // existing users keep their choice; keep isDarkMode mirrored (legacy
+        // readers treat 'blue' as dark). Pure + idempotent.
+        if (version < 7) {
+          next = { ...next };
+          if (next.themeMode !== 'light' && next.themeMode !== 'dark' && next.themeMode !== 'blue') {
+            next.themeMode = next.isDarkMode ? 'dark' : 'light';
+          }
+          next.isDarkMode = next.themeMode !== 'light';
+        }
+        // v7 → v8: defensive shape-normalization (no schema change). Coerces
+        // every crash-prone field — habit.history/frequency, note.content/status,
+        // and the top-level data slices — back to a safe shape so an old or
+        // partially-written blob can never throw inside a renderer. Idempotent.
+        if (version < 8) {
+          next = sanitizeStateSlice(next);
+        }
+        return next;
+      },
     }
   )
 );
+
+// DEV usage-seed block removed for ship: challenges follow the real unlock arc
+// and start empty (no forced content-gate open, no fake seed data).
