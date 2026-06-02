@@ -1,6 +1,6 @@
 # Day-Progress
 
-> **Working title.** A cross-platform mobile productivity app that combines habits, tasks, notes, a daily timeline, and milestone challenges into a single integrated workflow - built with React Native, Expo, and TypeScript.
+> **Working title.** A cross-platform mobile productivity app that brings habits, tasks, notes, and milestone challenges into a single integrated workflow - built with React Native, Expo, and TypeScript.
 
 > **Status:** Beta - actively developing.
 >
@@ -16,44 +16,39 @@ You'll need to allow installation from unknown sources on your device the first 
 
 Most productivity apps focus on one thing. A habit tracker. A todo list. A note-taker. A goal-setter. Switching between them costs friction, and they never share context - your tasks don't know about your habits, your habits don't know about your goals.
 
-Day-Progress puts all of them under one roof, with a shared data layer so they actually talk to each other. Your challenges unlock based on your habit strength. Your tasks have a commitment ritual ("Promise") that leaves a permanent mark when broken. Your timeline knows what you're doing right now. Your notes can be locked, sealed for later, or attached to anything else.
+Day-Progress puts them under one roof, with a shared data layer so they actually talk to each other. Your challenges advance when you complete the habits linked to them. Your tasks carry a commitment ritual ("Promise") that leaves a permanent mark when broken. Your end-of-week reflection lands in your notes. **Habits is the home screen** - the calm anchor the app opens to - and everything else grows out from there.
 
-The app is built for **English and Persian (Farsi)** with full RTL handling. Both Gregorian and Shamsi (Persian) calendar systems are supported throughout.
+The app also **reveals itself over time.** Rather than dropping every feature on a brand-new user, surfaces unlock as you actually use it (see [Progressive Unlock](#progressive-unlock)).
 
-## The Five Tabs
+It's built for **English and Persian (Farsi)** with full RTL handling, and ships in **three themes** - Light, a softened graphite Dark, and a deep-navy Blue. Both Gregorian and Shamsi (Persian) calendar systems are supported throughout.
 
-### 🗓️ Timeline (Command Center)
-The default tab and the structural anchor of the app. Shows your day on a vertical day-spine where intent-based scheduling, habits, tasks, and focused work all flow into one view.
+## The Four Tabs
 
-- **Intent-based scheduling** - define what tomorrow is about.
-- **Note** - write something on any day you want, present or future. Useful for things you don't want to miss, like birthdays.
-- **Pulse** - live activity indicator showing where you are in your scheduled day, week, month and year.
-- **Weekly schedule** - recurring time blocks that auto-populate the daily view.
-- **One-time schedule** - single-event entries that don't repeat.
-- **Habits-left and due-tasks rollup** - the day's remaining habits and overdue tasks surface inline, so the Timeline always shows what's left.
-- **Smart suggestions** - proposes tasks matched to your current energy level (via energy tags from the Tasks tab).
-- **Focused block** - protected time where the Timeline stops suggesting and just runs the block.
-- **Now-playing notifications** - real-time alerts that tell you what you should be doing.
-- **Reminders** - scheduled time-based alerts.
-- **Daily review** - end-of-day reflection prompt.
-- **Weekly review** - recurring weekly retrospective.
-- **Selective backup/restore** - export individual tabs' data rather than everything at once. Carries the schema-migration logic that handles AsyncStorage → MMKV upgrades cleanly.
+The app opens on **Habits**, and the bar runs **Habits → Tasks → Challenges → Notes** (plus a dev-only Art sandbox).
 
-### 📝 Notes
-A note-taking surface that goes well past plain text:
-- **Markdown formatting** with inline text highlighting.
-- **Audio memos** - record voice notes inline with text and images.
-- **Image attachments** with a zoomable viewer.
-- **Biometric locks** - protect individual notes with Face ID / fingerprint.
-- **Sealed notes (time capsules)** - write something today that unlocks at a future date you set.
-- **Snapshot history** - every note keeps a timeline of past versions.
-- **Templates** for repeatable note structures.
-- **Tags** for cross-note organization and filtering.
-- **Search** across all notes.
-- **Markdown export** - share notes as `.md` files.
-- **Capsule notifications** - sealed-note unlock reminders.
-- **Diary view** as a separate visual mode for chronological writing.
-- Full RTL / Persian support with proper text-direction detection per line.
+### 🔁 Habits (home)
+The anchor of the app, built around a **Strength Score** - a single 0-100 number per habit that's the source of truth for the whole tab:
+
+| Event | Effect |
+|---|---|
+| Completion | **+5** (or **+7.5** if score < 50 - hidden comeback bonus) |
+| Miss / skip | −8 |
+| Rest day 1 in a row | 0 (rest is free) |
+| Rest days 2 → 5+ in a row | −2, −4, −6, **−8** (rest becomes equivalent to running away) |
+
+Plus:
+- **Daily target** - quantitative or duration-based completion threshold per habit.
+- **Streak** counter alongside Strength Score (consecutive completion days).
+- **Time blocks** (morning / afternoon / evening / anytime).
+- **Schedule types** - specific weekdays *or* interval-based ("every 3 days").
+- **Rest days**, **skipped days**, and **per-day completion notes**.
+- **"Day Conquered" celebration** - distinct full-screen "Eclipse" treatments, randomly selected so the reward never goes stale.
+- **The Pact** - a commitment ritual for habits, analogous to the Promise system in Tasks but less punishing.
+- **Intent** - a "what is today for?" prompt above the day, so it starts with a direction.
+- **Day rating** - an end-of-day "how did today go?" check-in that closes the day out.
+- **Weekly Review** - at the end of your week a "close the week" prompt surfaces in-content for a 30-hour window (from 6pm on your chosen end-of-week day until the next day ends). The reflection you write is saved into the Notes tab.
+- **Global settings live here** (the app's only settings surface): the **Light / Dark / Navy** theme picker, end-of-week day, and one-tap full backup / restore.
+- **Reminders** via `@notifee/react-native`.
 
 ### ✅ Tasks
 A project + task system, not a flat to-do list:
@@ -69,30 +64,12 @@ A project + task system, not a flat to-do list:
 - **Overgrowth** *(under construction)* - a secret for now.
 - **The Promise system** - an opt-in commitment ritual. Promising a task makes it carry a colored accent stripe and counts toward a monthly Kept/Broken tally. **If a promised task hits its deadline uncompleted, the "scar" is permanent** - completing or archiving it afterward never clears the broken-promise marker. The pain is intentional and the data model enforces it.
 
-### 🔁 Habits
-A habit tracker built around a **Strength Score** - a single 0-100 number per habit that's the source of truth for the whole tab:
-
-| Event | Effect |
-|---|---|
-| Completion | **+5** (or **+7.5** if score < 50 - hidden comeback bonus) |
-| Miss / skip | −8 |
-| Rest day 1 in a row | 0 (rest is free) |
-| Rest days 2 → 5+ in a row | −2, −4, −6, **−8** (rest becomes equivalent to running away) |
-
-Plus:
-- **Daily target** - quantitative or duration-based completion threshold per habit.
-- **Streak** counter alongside Strength Score (consecutive completion days).
-- **Time blocks** (morning / afternoon / evening / anytime).
-- **Schedule types** - specific weekdays *or* interval-based ("every 3 days").
-- **Rest days**, **skipped days**, and **per-day completion notes**.
-- **"Day Conquered" celebration variations** - five distinct visual treatments (`Eclipse_Silence`, `Eclipse_Brutal`, `Eclipse_Hour`, `Eclipse_Horizon`, `Eclipse_NightSky`), randomly selected so the reward never goes stale.
-- **Reminders** via `@notifee/react-native`.
-- **Pact** - a commitment ritual for habits, analogous to the Promise system in Tasks but less punishing.
-
 ### 🏆 Challenges
 Multi-stage goal tracking with progression mechanics:
-- **Milestones** within each challenge.
-- **Achievements** unlocked across the system.
+- **Cadence** - each challenge is *daily* (a chain that can break), *cumulative* (a total reached at any rate), or *one-shot* (do the thing once).
+- **Habit links** - link habits to a challenge so completing them auto-advances its progress.
+- **Ledger + chain** - a timestamped log of every increment, and a streak "chain" for daily challenges.
+- **Milestones** within each challenge, and **achievements** unlocked across the system.
 - **Urgency styles** - challenges visually transform as their deadline closes in. Two thresholds:
   - **STATIC** (≤7 days) - ambient amber imperfection.
   - **HAEMORRHAGE** (≤3 days) - red alarm state.
@@ -100,15 +77,40 @@ Multi-stage goal tracking with progression mechanics:
 - **Dead states** - graceful handling of failed challenges (the app doesn't pretend it didn't happen).
 - **Preset library** of pre-built challenges to start from.
 - **Finishing-line message** - a custom message attached to each challenge, revealed at completion.
-- **Unlock gate** - the Challenges tab is gated behind a minimum global habit-strength score, so users can't grab the gamification reward without building a baseline first.
+- **Unlock gate** - the Challenges tab is hidden for brand-new users and revealed by the progressive-unlock system after the first couple of days (a locked teaser appears first), so the gamification reward isn't handed over before there's a baseline to build on.
+
+### 📝 Notes
+A note-taking surface that goes well past plain text:
+- **Markdown formatting** with inline text highlighting.
+- **Audio memos** - record voice notes inline with text and images.
+- **Image attachments** with a zoomable viewer.
+- **Biometric locks** - protect individual notes with Face ID / fingerprint.
+- **Sealed notes (time capsules)** - write something today that unlocks at a future date you set.
+- **Snapshot history** - every note keeps a timeline of past versions.
+- **Templates** for repeatable note structures.
+- **Tags** for cross-note organization and filtering.
+- **Search** across all notes.
+- **Markdown export** - share notes as `.md` files.
+- **Capsule notifications** - sealed-note unlock reminders.
+- **Diary view** as a separate visual mode for chronological writing.
+- **Weekly reviews** written on the Habits tab land here as notes.
+- Full RTL / Persian support with proper text-direction detection per line.
+
+## Progressive Unlock
+
+Day-Progress doesn't hand a new user everything at once. Features reveal themselves as you use the app - a quiet "whisper" bar announces each unlock, a small dot marks what's new, and tabs like Challenges only appear once you've put in a few days. A first-launch intro sets the frame. Around day 30 a "depth map" (Feature Hunt) lays out everything the app contains.
+
+Under the hood it's a small data-driven engine (`lib/unlocks.ts` + `lib/unlockTriggers.ts`): unlock conditions are evaluated against primitive counters in the store via narrow Zustand selectors, so the root layout only re-renders when a counter actually crosses a threshold - gating lives in data, not hardcoded per screen.
 
 ## Engineering Highlights
 
 A few things worth pointing out for anyone reviewing the code:
 
-- **Schema migration logic** - when the storage layer moved from AsyncStorage to MMKV (v20 → v21), the Timeline tab reads legacy keys on first focus, writes them to the new store, then deletes the old keys with a one-time `MIGRATION_DONE_KEY`. Real production-grade migration handling.
-- **Comments document non-obvious choices.** Why `KeyboardAvoidingView` from `react-native-keyboard-controller` instead of the built-in or `KeyboardAwareScrollView`? There's a multi-line comment in `app/(tabs)/index.tsx` explaining the double-lift bug that decision avoids.
-- **Single-source-of-truth scoring.** `lib/habitScore.ts` exists because the Challenges tab needs to know habit strength without importing the Habits tab. Pulled out specifically to keep heavy UI imports off other tabs.
+- **Versioned schema migrations.** The Zustand store carries a `migrate` function (currently **v7**) that reshapes persisted MMKV data across releases: renaming unlock keys, backfilling new challenge fields (cadence / links / ledger), stripping cut slices (Timeline, standalone reminders), and converting the old `isDarkMode` boolean into the 3-way `themeMode`. A `scripts/verify-persist-migration.mjs` check guards it.
+- **One theme system, three palettes.** `lib/timelineTheme.ts`'s `getTheme(themeMode)` is the single palette source; the React Navigation theme, the native window background, and every tab read from it, so a theme switch is coherent everywhere - and tab switches never flash the default white background.
+- **Single-source-of-truth scoring.** `lib/habitScore.ts` exists because the Challenges tab needs habit strength without importing the Habits tab - pulled out specifically to keep heavy UI imports off other tabs.
+- **Data-driven progressive unlock.** Feature gating is computed from store counters (`lib/unlocks.ts`), not branched per-screen, so adding a gate is a config change.
+- **Comments document non-obvious choices.** Why `KeyboardAvoidingView` from `react-native-keyboard-controller` instead of the built-in? There's a comment explaining the double-lift bug that decision avoids.
 - **Persian / RTL is first-class**, not bolted on. `lib/rtl.ts` provides direction detection and styling helpers used across every tab. Lines auto-detect their direction so mixed-language notes work correctly.
 - **Calendar abstraction** - the entire app stores dates as ISO strings but UI accepts both Gregorian and Shamsi (Persian) calendar systems via a `CalendarSystem` type used throughout the store.
 
@@ -121,9 +123,9 @@ A few things worth pointing out for anyone reviewing the code:
 - **@notifee/react-native** + **expo-notifications** - local + scheduled notifications
 - **@gorhom/bottom-sheet** - sheets for quick-add / settings UI
 - **@shopify/flash-list** - virtualized lists for performance
-- **react-native-reanimated** + **react-native-gesture-handler** + **react-native-skia** - animation and graphics
-- **victory-native** + **react-native-chart-kit** - charts and stats
+- **react-native-reanimated** + **react-native-gesture-handler** - animation, gestures, and the custom animated tab bar
 - **react-native-keyboard-controller** - cross-platform keyboard handling
+- **expo-system-ui** - native root background color, kept in sync with the active theme
 - **expo-local-authentication** - biometric note locks
 - **expo-av** + **expo-image-picker** - audio memos and image attachments
 - **react-native-iap** - in-app purchase scaffolding (future monetization)
@@ -133,40 +135,49 @@ A few things worth pointing out for anyone reviewing the code:
 
 ```
 day-progress/
-├── app/                    # expo-router screens
-│   └── (tabs)/             # the five-tab bottom navigator
-│       ├── _layout.tsx     # tab bar definition
-│       ├── index.tsx       # Timeline (default route)
-│       ├── notes.tsx
-│       ├── todo.tsx
-│       ├── habits.tsx
-│       ├── challenges.tsx
-│       └── art.tsx         # dev-only visual sandbox (__DEV__ gated)
+├── app/                          # expo-router screens
+│   ├── _layout.tsx               # root: nav theme, alarms, notifications, unlock triggers
+│   └── (tabs)/                   # four-tab bottom navigator (custom AnimatedTabBar)
+│       ├── _layout.tsx           # tab bar + screen options
+│       ├── index.tsx             # redirect → habits (the anchor route)
+│       ├── habits.tsx            # Habits - the home screen
+│       ├── todo.tsx              # Tasks
+│       ├── challenges.tsx        # Challenges
+│       ├── notes.tsx             # Notes
+│       └── art.tsx               # dev-only visual sandbox (__DEV__ gated)
 ├── components/
-│   ├── timeline/           # Timeline subcomponents (DaySpine, modals, etc.)
-│   ├── challenges/         # Challenge UI (preset picker, etc.)
-│   ├── notes/              # Notes UI (DiaryView, AudioPlayer)
-│   ├── ui/                 # shared UI primitives
-│   ├── DayConqueredVariations.tsx  # 5 Eclipse celebration variants
-│   └── CalendarPicker.tsx          # Gregorian + Shamsi date picker
+│   ├── AnimatedTabBar.tsx            # custom animated footer
+│   ├── SettingsSheet.tsx            # global settings (themes, end-of-week, backup)
+│   ├── IntentPanel.tsx              # "what is today for?" (Habits)
+│   ├── DayRatingCheckIn.tsx         # end-of-day rating (Habits)
+│   ├── GrowthIntro.tsx              # first-launch progressive-unlock intro
+│   ├── FeatureHunt.tsx              # day-30 "depth map" of features
+│   ├── Whisper.tsx                  # ambient unlock-announcement bar
+│   ├── UnlockDot.tsx                # "new" dot for freshly unlocked features
+│   ├── DayConqueredVariations.tsx   # "Eclipse" celebration variants
+│   ├── CalendarPicker.tsx           # Gregorian + Shamsi date picker
+│   ├── challenges/                  # Challenge UI (preset picker)
+│   └── notes/                       # Notes UI (DiaryView, AudioPlayer, MarkdownContent)
 ├── lib/
-│   ├── backup.ts                # selective tab/slice backup + restore
-│   ├── habitScore.ts            # single-source-of-truth scoring
-│   ├── challengePresets.ts      # built-in challenge templates
-│   ├── notesExport.ts           # markdown export
-│   ├── notesRichText.ts         # markdown stripping, line-direction
-│   ├── rtl.ts                   # RTL detection + style helpers
-│   ├── notifChannels.ts         # Android notification channel IDs
-│   ├── reminderNotifications.ts # task reminders
-│   ├── timelineNotifications.ts # "now playing" timeline alerts
-│   └── timelineTheme.ts         # color system
+│   ├── habitScore.ts                # single-source-of-truth habit scoring
+│   ├── unlocks.ts                   # progressive-unlock engine (features, thresholds)
+│   ├── unlockTriggers.ts            # evaluates unlock conditions from store counters
+│   ├── weeklyReview.ts              # end-of-week review window logic
+│   ├── challengeChain.ts            # challenge chain / streak logic
+│   ├── challengeNotifications.ts    # challenge reminders
+│   ├── challengePresets.ts          # built-in challenge templates
+│   ├── backup.ts                    # full export / import
+│   ├── notesExport.ts               # markdown export
+│   ├── notesRichText.ts             # markdown stripping, line-direction
+│   ├── rtl.ts                       # RTL detection + style helpers
+│   ├── sanitize.ts                  # input sanitation
+│   ├── notifChannels.ts             # Android notification channel IDs
+│   └── timelineTheme.ts             # 3-mode color system (getTheme)
 ├── store/
-│   └── useAppStore.ts      # Zustand store - all persisted state
-├── hooks/                  # theme + color-scheme hooks
-├── constants/              # shared constants
-├── assets/                 # fonts, images, icons
-├── scripts/                # build / reset helpers
-└── wake-plugin.js          # custom Expo config plugin
+│   └── useAppStore.ts            # Zustand store - all persisted state + migrations
+├── scripts/                      # verify-persist-migration, find-unused-deps, etc.
+├── assets/                       # fonts, images, icons
+└── wake-plugin.js                # custom Expo config plugin
 ```
 
 ## Running Locally
@@ -176,7 +187,7 @@ npm install
 npx expo start
 ```
 
-Because the app uses native modules (notifee, MMKV, Skia, biometric auth, etc.), **Expo Go is not sufficient** - you'll need a development build:
+Because the app uses native modules (notifee, MMKV, biometric auth, etc.), **Expo Go is not sufficient** - you'll need a development build:
 
 ```bash
 npx expo run:android   # or run:ios
@@ -184,30 +195,7 @@ npx expo run:android   # or run:ios
 
 ## Screenshots
 
-### 🗓️ Timeline
-<p align="center">
-  <img src="./screenshots/timeline-view.png" alt="Timeline view" width="320">
-</p>
-
-### 📝 Notes
-| Note view | Sealing a note |
-|---|---|
-| ![Notes view](./screenshots/notes-view-note.png) | ![Sealing process](./screenshots/notes-sealing-process.png) |
-
-### ✅ Tasks
-<p align="center">
-  <img src="./screenshots/tasks-view.png" alt="Tasks view" width="320">
-</p>
-
-### 🔁 Habits
-| Habits view | Strength Score system |
-|---|---|
-| ![Habits view](./screenshots/habits-view.png) | ![Score system](./screenshots/habits-score-system.png) |
-
-### 🏆 Challenges
-<p align="center">
-  <img src="./screenshots/challenges-locked.png" alt="Challenges - locked state" width="320">
-</p>
+_Refreshed screenshots for the current design (graphite/navy themes, Habits home) are coming with the beta release._
 
 ## Author
 
