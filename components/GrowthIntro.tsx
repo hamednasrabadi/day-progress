@@ -8,12 +8,9 @@
  * uninstall" into "ah, it reveals itself → let me keep going." One sentence
  * of framing does most of that work.
  *
- * Two paths:
- *   - Begin → the gentle unfold (default). Just dismisses; triggers proceed.
- *   - Show me all of it → the power-user fork. Calls unlockAll() so someone
- *     who already knows what they want isn't gated. This is the ONLY honest
- *     home for "unlock everything" — an explicit up-front choice, not a hidden
- *     settings escape hatch.
+ * One path: Begin → the gentle unfold. Just dismisses; the progressive-unlock
+ * triggers take it from there. (An up-front "unlock everything" fork used to
+ * live here; removed — the app is meant to reveal itself, with no bypass.)
  *
  * Theme-aware (dark default), matched to the app's voice: terse, a little
  * poetic, no exclamation marks.
@@ -27,11 +24,10 @@ import { Feather } from '@expo/vector-icons';
 import type { Theme } from '../lib/timelineTheme';
 
 export function GrowthIntro({
-  visible, onBegin, onShowEverything, theme,
+  visible, onBegin, theme,
 }: {
   visible: boolean;
   onBegin: () => void;
-  onShowEverything: () => void;
   theme: Theme;
 }) {
   const insets = useSafeAreaInsets();
@@ -48,22 +44,13 @@ export function GrowthIntro({
           </Text>
         </View>
 
-        <View style={{ paddingHorizontal: 32, gap: 14 }}>
+        <View style={{ paddingHorizontal: 32 }}>
           <TouchableOpacity
             onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); onBegin(); }}
             activeOpacity={0.85}
             style={{ backgroundColor: theme.textMain, borderRadius: 16, paddingVertical: 18, alignItems: 'center' }}
           >
             <Text style={{ color: theme.bg, fontSize: 16, fontWeight: '900', letterSpacing: 0.3 }}>Begin</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); onShowEverything(); }}
-            activeOpacity={0.7}
-            style={{ paddingVertical: 8, alignItems: 'center' }}
-          >
-            <Text style={{ color: theme.textSub, fontSize: 13, fontWeight: '600' }}>
-              Prefer everything at once? <Text style={{ color: theme.textMain, fontWeight: '800' }}>Show me all of it.</Text>
-            </Text>
           </TouchableOpacity>
         </View>
       </View>

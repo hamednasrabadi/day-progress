@@ -73,7 +73,6 @@ export default function RootLayout() {
   }, []);
   const introSeen = useAppStore(s => s.introSeen);
   const setIntroSeen = useAppStore(s => s.setIntroSeen);
-  const unlockAllFeatures = useAppStore(s => s.unlockAll);
   const themeMode = useAppStore(s => s.themeMode);
   const theme = getTheme(themeMode);
   // expo-router sets no navigation theme, so React Navigation and the native
@@ -259,7 +258,6 @@ export default function RootLayout() {
         visible={showIntro}
         theme={theme}
         onBegin={() => setIntroSeen(true)}
-        onShowEverything={() => { unlockAllFeatures(); setIntroSeen(true); }}
       />
 
       {/* Full-screen alarm overlay — rendered above the entire navigator */}
