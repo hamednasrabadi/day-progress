@@ -83,6 +83,11 @@ export function IntentPanel({
   const shipIntentBackToToday = useAppStore(s => s.shipIntentBackToToday);
   const updateIntentLabel     = useAppStore(s => s.updateIntentLabel);
   const resetIntentPushCount  = useAppStore(s => s.resetIntentPushCount);
+  // Challenges full-unlock gate — mirrors challenges.tsx (the LockGate clears
+  // when allFeaturesUnlocked || challengesUnlocked). Drives whether the add
+  // modal offers the "Goal" (challenge-linked) category.
+  const challengesUnlocked    = useAppStore(s => s.challengesUnlocked);
+  const allFeaturesUnlocked   = useAppStore(s => s.allFeaturesUnlocked);
 
   // ── Local modal state (encapsulated so Habits never sees it) ──
   const [intentModalVisible, setIntentModalVisible] = useState(false);
@@ -441,6 +446,7 @@ export function IntentPanel({
         habits={habits}
         challenges={challenges}
         existingIntents={intents}
+        goalCategoryUnlocked={allFeaturesUnlocked || challengesUnlocked}
         maxLabelLen={INTENT_LABEL_MAX}
         onClose={() => setIntentModalVisible(false)}
         onAdd={(payload) => {

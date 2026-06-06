@@ -29,7 +29,7 @@ export type IntentAddPayload =
 
 export function IntentAddModal({
   visible, theme, isDarkMode, targetDate, todayStr, tasks, habits, challenges,
-  existingIntents, onClose, onAdd, insetsBottom, sheetBottomPadStyle, maxLabelLen,
+  existingIntents, onClose, onAdd, insetsBottom, sheetBottomPadStyle, maxLabelLen, goalCategoryUnlocked,
 }: {
   visible: boolean;
   theme: Theme;
@@ -45,6 +45,7 @@ export function IntentAddModal({
   insetsBottom: number;
   sheetBottomPadStyle: any;
   maxLabelLen: number;
+  goalCategoryUnlocked: boolean;
 }) {
   const [tab, setTab] = useState<'custom' | 'task' | 'habit' | 'challenge'>('custom');
   const [draft, setDraft] = useState('');
@@ -92,12 +93,15 @@ export function IntentAddModal({
     return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date(ty, tm - 1, td).getDay()];
   }, [targetDate, todayStr]);
 
+  // Goal = an intent linked to a Challenge. Hidden until Challenges is fully
+  // unlocked (earned past its LockGate, or the all-features dev unlock) — the
+  // same gate challenges.tsx uses. Until then there are no challenges to link.
   const TABS: { key: typeof tab; label: string }[] = [
-    { key: 'custom',    label: 'Custom' },
-    { key: 'task',      label: 'Task' },
-    { key: 'habit',     label: 'Habit' },
-    { key: 'challenge', label: 'Goal' },
+    { key: 'custom', label: 'Custom' },
+    { key: 'task',   label: 'Task' },
+    { key: 'habit',  label: 'Habit' },
   ];
+  if (goalCategoryUnlocked) TABS.push({ key: 'challenge', label: 'Goal' });
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
