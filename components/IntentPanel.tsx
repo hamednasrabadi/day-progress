@@ -32,7 +32,7 @@ import type { Theme } from '../lib/timelineTheme';
 import { hexToRgba } from '../lib/timelineTheme';
 import { rtlInputStyle, rtlTextStyle, persianSafeInputStyle } from '../lib/rtl';
 import { useAppStore } from '../store/useAppStore';
-import { IntentAddModal } from './timeline/IntentAddModal';
+import { IntentComposer } from './IntentComposer';
 
 // Matches the Timeline original — intent labels stay short and directive.
 const INTENT_LABEL_MAX = 200;
@@ -73,26 +73,16 @@ export function IntentPanel({
 }) {
   // ── Store (read directly — same pattern as SettingsModal) ──
   const intents               = useAppStore(s => s.intents);
-  const tasks                 = useAppStore(s => s.tasks);
-  const habits                = useAppStore(s => s.habits);
   const challenges            = useAppStore(s => s.challenges);
-  const addIntent             = useAppStore(s => s.addIntent);
   const toggleIntent          = useAppStore(s => s.toggleIntent);
   const deleteIntent          = useAppStore(s => s.deleteIntent);
   const pushIntentToTomorrow  = useAppStore(s => s.pushIntentToTomorrow);
   const shipIntentBackToToday = useAppStore(s => s.shipIntentBackToToday);
   const updateIntentLabel     = useAppStore(s => s.updateIntentLabel);
   const resetIntentPushCount  = useAppStore(s => s.resetIntentPushCount);
-  // Challenges full-unlock gate — mirrors challenges.tsx (the LockGate clears
-  // when allFeaturesUnlocked || challengesUnlocked). Drives whether the add
-  // modal offers the "Goal" (challenge-linked) category.
-  const challengesUnlocked    = useAppStore(s => s.challengesUnlocked);
-  const allFeaturesUnlocked   = useAppStore(s => s.allFeaturesUnlocked);
+  const setChallenges         = useAppStore(s => s.setChallenges);
 
-  // ── Local modal state (encapsulated so Habits never sees it) ──
-  const [intentModalVisible, setIntentModalVisible] = useState(false);
-  // `intentTargetDate` is the YYYY-MM-DD the new intent is pinned to.
-  const [intentTargetDate, setIntentTargetDate] = useState<string>('');
+  // ── Local sheet/prompt state (encapsulated so Habits never sees it) ──
   // `intentRethink` holds the id whose 3rd-push rethink prompt is open.
   const [intentRethink, setIntentRethink] = useState<string | null>(null);
   // `intentDetailId` holds the id whose detail sheet is open (cancel/edit/delete).
@@ -154,12 +144,6 @@ export function IntentPanel({
     : weekdayTitle(selectedDateStr);
 
   // ── Handlers ──
-  const openIntentModal = useCallback((date: string) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setIntentTargetDate(date);
-    setIntentModalVisible(true);
-  }, []);
-
   // Push wraps the store action with the rethink-prompt check. set() is
   // synchronous in Zustand, so reading back gives the just-pushed value.
   const handlePushIntent = useCallback((id: string) => {
@@ -189,18 +173,19 @@ export function IntentPanel({
           borderStyle: isTodaySelected ? 'solid' : 'dashed',
           backgroundColor: theme.surface,
         }}>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: selectedDayIntents.length > 0 ? 10 : 0 }}>
+          <View style={{ marginBottom: 12 }}>
             <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 1.8 }}>
               {activeDayLabel}{selectedDayIntents.length > 0 ? `  ·  ${selectedDayIntentsDoneCount}/${selectedDayIntents.length}` : ''}
             </Text>
-            <TouchableOpacity onPress={() => openIntentModal(selectedDateStr)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-              <Feather name="plus" size={12} color={theme.textMain} />
-              <Text style={{ color: theme.textMain, fontSize: 11, fontWeight: '800' }}>Add</Text>
-            </TouchableOpacity>
+          </View>
+          {/* Inline composer — the always-on add surface (promoted from the Lab
+              "Inline composer" study). Pick a category, then type or tap. */}
+          <View style={{ marginBottom: selectedDayIntents.length > 0 ? 14 : 0 }}>
+            <IntentComposer theme={theme} isDarkMode={isDarkMode} targetDate={selectedDateStr} maxLabelLen={INTENT_LABEL_MAX} />
           </View>
           {selectedDayIntents.length === 0 ? (
-            <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '500', fontStyle: 'italic', opacity: 0.7, marginTop: 4 }}>
-              {isTodaySelected ? 'Nothing set for today. Drop one in.' : `Set up ${activeDayWord}.`}
+            <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '500', fontStyle: 'italic', opacity: 0.7, marginTop: 2 }}>
+              {isTodaySelected ? 'Nothing set yet.' : `Nothing set for ${activeDayWord} yet.`}
             </Text>
           ) : (
             selectedDayIntents.map((it, idx) => {
@@ -433,40 +418,8 @@ export function IntentPanel({
         </View>
       )}
 
-      {/* ── INTENT ADD MODAL ── Four tabs: Custom / From Tasks / From Habits /
-          From Goals. Tapping a source row creates the linked intent and closes;
-          Custom requires typing + Add. Already-linked items are filtered out. */}
-      <IntentAddModal
-        visible={intentModalVisible}
-        theme={theme}
-        isDarkMode={isDarkMode}
-        targetDate={intentTargetDate}
-        todayStr={todayStr}
-        tasks={tasks}
-        habits={habits}
-        challenges={challenges}
-        existingIntents={intents}
-        goalCategoryUnlocked={allFeaturesUnlocked || challengesUnlocked}
-        maxLabelLen={INTENT_LABEL_MAX}
-        onClose={() => setIntentModalVisible(false)}
-        onAdd={(payload) => {
-          const now = Date.now();
-          addIntent({
-            id: `int_${now}_${Math.random().toString(36).slice(2, 6)}`,
-            date: intentTargetDate,
-            label: payload.label,
-            completed: false,
-            sourceType: payload.sourceType,
-            sourceId: payload.sourceId,
-            pushCount: 0,
-            createdAt: now,
-          });
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-          setIntentModalVisible(false);
-        }}
-        insetsBottom={insetsBottom}
-        sheetBottomPadStyle={sheetBottomPadStyle}
-      />
+      {/* Add now happens inline via <IntentComposer> at the top of the active
+          block — the old IntentAddModal four-tab sheet was retired. */}
 
       {/* ── INTENT DETAIL SHEET ── long-press a row. Cancel / Edit / Delete. */}
       {intentDetailId && (() => {
@@ -497,6 +450,35 @@ export function IntentPanel({
                 <Text style={[{ color: theme.textMain, fontSize: 16, fontWeight: '700', lineHeight: 22, marginBottom: 18 }, rtlTextStyle(item.label)]}>
                   {item.label}
                 </Text>
+                {/* Goal-linked intents: edit how much checking this off advances the
+                    goal. Writes the linked challenge's per-challenge intentIncrement
+                    (0 = off) — same value as the challenge's edit sheet. */}
+                {item.sourceType === 'challenge' && (() => {
+                  const ch = challenges.find(c => c.id === item.sourceId);
+                  if (!ch) return null;
+                  const inc = ch.intentIncrement ?? 1;
+                  const setInc = (v: number) => setChallenges(challenges.map(c => c.id === ch.id ? { ...c, intentIncrement: Math.max(0, v) } : c));
+                  const stepBtn = { width: 32, height: 32, borderRadius: 8, borderWidth: 1, borderColor: theme.border, alignItems: 'center' as const, justifyContent: 'center' as const };
+                  return (
+                    <View style={{ marginBottom: 18, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: theme.border }}>
+                      <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 1.4, marginBottom: 10 }}>ADVANCES THIS GOAL BY</Text>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '600', flex: 1 }}>when you check it off</Text>
+                        {inc === 0 ? (
+                          <TouchableOpacity onPress={() => setInc(1)} style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10, borderWidth: 1, borderColor: theme.border }}>
+                            <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '800' }}>Off</Text>
+                          </TouchableOpacity>
+                        ) : (
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                            <TouchableOpacity onPress={() => setInc(inc - 1)} style={stepBtn}><Feather name="minus" size={16} color={theme.textMain} /></TouchableOpacity>
+                            <Text style={{ color: theme.textMain, fontSize: 15, fontWeight: '900', minWidth: 34, textAlign: 'center' }}>+{inc}</Text>
+                            <TouchableOpacity onPress={() => setInc(inc + 1)} style={stepBtn}><Feather name="plus" size={16} color={theme.textMain} /></TouchableOpacity>
+                          </View>
+                        )}
+                      </View>
+                    </View>
+                  );
+                })()}
                 <View style={{ flexDirection: 'row', gap: 8 }}>
                   <TouchableOpacity
                     onPress={() => setIntentDetailId(null)}

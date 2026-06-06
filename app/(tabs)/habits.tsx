@@ -1588,6 +1588,7 @@ export default function HabitsScreen() {
                 // @ts-ignore
                 estimatedItemSize={100}
                 showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
                 contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 120 }}
                 ListHeaderComponent={
                   <>
