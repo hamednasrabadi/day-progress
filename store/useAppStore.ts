@@ -1005,13 +1005,21 @@ export const useAppStore = create<AppState>()(
       dayLog: {},
       setDayLog: (log) => set({ dayLog: log }),
       logDayRating: (dateStr, rating) => set((s) => {
-        // Count only the FIRST rating of a given day toward the unlock counter
-        // — re-rating (changing strong→rough) overwrites in dayLog but doesn't
-        // re-tick. Keeps dayRatingsCount == distinct days rated, monotonic.
-        const isFirstForDay = !s.dayLog[dateStr];
+        // dayRatingsCount gates Weekly Review at >= 3 and must mean "distinct
+        // days rated", monotonic. Derive it as the high-water mark of distinct
+        // days in dayLog — NOT a per-call +1.
+        //
+        // Why this isn't a simple increment: the "change today's rating" UI
+        // clears today's entry first (DayRatingCheckIn -> setDayLog with the key
+        // deleted) and then re-adds it. The old `!dayLog[date]` check saw that
+        // freshly-deleted day as brand-new and ticked again, so editing today 3x
+        // pushed the count to 3 and wrongly unlocked Weekly Review. Taking
+        // max(prev, distinctDays) makes re-rating the same day a no-op, still
+        // ticks up on genuinely new days, and never decreases when one is cleared.
+        const nextLog = { ...s.dayLog, [dateStr]: rating };
         return {
-          dayLog: { ...s.dayLog, [dateStr]: rating },
-          dayRatingsCount: isFirstForDay ? (s.dayRatingsCount ?? 0) + 1 : (s.dayRatingsCount ?? 0),
+          dayLog: nextLog,
+          dayRatingsCount: Math.max(s.dayRatingsCount ?? 0, Object.keys(nextLog).length),
         };
       }),
 
