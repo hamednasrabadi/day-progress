@@ -269,6 +269,10 @@ export function inferChallengeCadence(target?: number, unit?: string): Challenge
 export type Challenge = {
   id: string; title: string; icon: any;
   color: string; current: number; target: number; unit: string;
+  // How much finishing a linked-goal INTENT advances this challenge. Default 1
+  // (undefined === 1); set to 0 to turn it off so intents don't move it. Separate
+  // from `links` (per-habit auto-advance). Configurable in the challenge edit sheet.
+  intentIncrement?: number;
   deadlineTs?: number; reward?: string; punishment?: string;
   urgencyStyle?: UrgencyStyle;
   cadence?: ChallengeCadence;
@@ -1208,15 +1212,63 @@ export const useAppStore = create<AppState>()(
       // ones that landed on a day < today and got missed).
       intents: [],
       addIntent: (intent) => set((s) => ({ intents: [...s.intents, intent] })),
-      toggleIntent: (id) => set((s) => ({
-        // Pure toggle — pushCount is preserved across check/uncheck. Earlier we
-        // reset the counter when an item came back to incomplete, theory being
-        // "re-opening = fresh chain." But the user pointed out that an accidental
-        // tap shouldn't wipe real chronic-deferral signal. Counter now only
-        // resets when explicitly acknowledged via the rethink prompt's Keep
-        // action (so the prompt has a clean slate post-acknowledgement).
-        intents: s.intents.map(i => i.id === id ? { ...i, completed: !i.completed } : i),
-      })),
+      toggleIntent: (id) => set((s) => {
+        // Flip the intent, then mirror the change onto a linked source (two-way):
+        // checking a linked intent completes its source; un-checking reverses it.
+        //   • habit     → marked fully done for the day (history filled to
+        //                 targetCount), or cleared back to pending on un-check
+        //   • task      → `completed` flag (+ completedAt) toggled
+        //   • challenge → `current` advanced by intentIncrement (default 1; 0 = off),
+        //                 reversed on un-check, clamped to [0, target]
+        // pushCount is preserved across check/uncheck (only the rethink prompt's
+        // Keep action resets it). Unlinked intents just flip.
+        const intent = s.intents.find(i => i.id === id);
+        if (!intent) return {};
+        const done = !intent.completed;
+        const intents = s.intents.map(i => i.id === id ? { ...i, completed: done } : i);
+        if (!intent.sourceType || !intent.sourceId) return { intents };
+        const { sourceType, sourceId, date } = intent;
+
+        if (sourceType === 'habit') {
+          const habits = s.habits.map(h => {
+            if (h.id !== sourceId) return h;
+            const history = h.history.filter(d => d !== date);
+            if (done) for (let k = 0; k < (h.targetCount ?? 1); k++) history.push(date);
+            return {
+              ...h,
+              history,
+              restDays: done ? (h.restDays || []).filter(d => d !== date) : h.restDays,
+              skippedDays: done ? (h.skippedDays || []).filter(d => d !== date) : h.skippedDays,
+            };
+          });
+          // Keep the unlock counters in step with toggleHabitAction (monotonic).
+          let maxSingle = s.maxSingleHabitCompletions ?? 0;
+          for (const h of habits) if (h.history.length > maxSingle) maxSingle = h.history.length;
+          const dayConqueredEver = (s.dayConqueredEver ?? false) || (done && isDayConquered(habits, date));
+          return { intents, habits, maxSingleHabitCompletions: maxSingle, dayConqueredEver };
+        }
+
+        if (sourceType === 'task') {
+          const now = Date.now();
+          const tasks = s.tasks.map(t => t.id === sourceId
+            ? { ...t, completed: done, completedAt: done ? now : undefined }
+            : t);
+          return { intents, tasks };
+        }
+
+        if (sourceType === 'challenge') {
+          const challenges = s.challenges.map(c => {
+            if (c.id !== sourceId) return c;
+            const inc = c.intentIncrement ?? 1;
+            if (inc === 0) return c;
+            const next = Math.max(0, Math.min(c.target, c.current + (done ? inc : -inc)));
+            return { ...c, current: next };
+          });
+          return { intents, challenges };
+        }
+
+        return { intents };
+      }),
       updateIntentLabel: (id, label) => set((s) => ({
         intents: s.intents.map(i => i.id === id ? { ...i, label } : i),
       })),
