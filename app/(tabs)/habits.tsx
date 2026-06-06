@@ -1546,25 +1546,31 @@ export default function HabitsScreen() {
                 </View>
               </View>
               <View style={{ flexDirection: 'row', gap: 16, alignItems: 'center' }}>
+                {/* Retired (trophies) — kept LEFTMOST on purpose. It's the only
+                    optional icon in this cluster, so placing it left of the
+                    always-present actions means earning a trophy (or its count
+                    changing) never nudges Settings / Vault / Add out of their
+                    fixed spots. The count rides as an absolute superscript so it
+                    adds no layout width of its own. */}
+                {retiredHabits.length > 0 && (
+                  <TouchableOpacity onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setShowRetired(true); }} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
+                    <View style={{ width: 20, height: 20, alignItems: 'center', justifyContent: 'center' }}>
+                      <Feather name="award" size={20} color={theme.textMain} />
+                      <Text style={{ position: 'absolute', top: -7, right: -9, color: theme.textSub, fontSize: 10, fontWeight: '700', opacity: 0.5, fontVariant: ['tabular-nums'] }}>{retiredHabits.length}</Text>
+                    </View>
+                  </TouchableOpacity>
+                )}
                 {/* Settings — rehomed from the Timeline (now the app's only Settings entry). */}
                 <TouchableOpacity onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setShowSettings(true); }} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
                   <Feather name="settings" size={20} color={theme.textMain} />
                 </TouchableOpacity>
-                {/* Retired (trophies) — only once you've retired something. */}
-                {retiredHabits.length > 0 && (
-                  <TouchableOpacity onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setShowRetired(true); }} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                      <Feather name="award" size={20} color={theme.textMain} />
-                      <Text style={{ color: theme.textSub, fontSize: 11, fontWeight: '700', opacity: 0.5, fontVariant: ['tabular-nums'] }}>{retiredHabits.length}</Text>
-                    </View>
-                  </TouchableOpacity>
-                )}
-                {/* Vault/archive — always available (ungated). */}
+                {/* Vault/archive — always available (ungated). Count is an absolute
+                    superscript so a changing archived total never reflows the row. */}
                 <TouchableOpacity onPress={openVault} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                  <View style={{ width: 20, height: 20, alignItems: 'center', justifyContent: 'center' }}>
                     <Feather name="archive" size={20} color={theme.textMain} />
                     {habits.filter(h => h.status === 'archived').length > 0 && (
-                      <Text style={{ color: theme.textSub, fontSize: 11, fontWeight: '700', opacity: 0.5, fontVariant: ['tabular-nums'] }}>{habits.filter(h => h.status === 'archived').length}</Text>
+                      <Text style={{ position: 'absolute', top: -7, right: -9, color: theme.textSub, fontSize: 10, fontWeight: '700', opacity: 0.5, fontVariant: ['tabular-nums'] }}>{habits.filter(h => h.status === 'archived').length}</Text>
                     )}
                   </View>
                 </TouchableOpacity>
