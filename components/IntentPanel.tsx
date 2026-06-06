@@ -47,6 +47,21 @@ function addDaysStr(dateStr: string, n: number): string {
   return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
 }
 
+// Weekday labels for a YYYY-MM-DD string, used to title the +2 / +3 day chips
+// (e.g. "WED") and the add-modal copy (e.g. "Wed"). Fixed English arrays so the
+// label is predictable regardless of device locale — the Habits day strip
+// renders Gregorian weekday abbreviations the same way.
+const WEEKDAY_ABBR = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'] as const;
+function weekdayAbbr(dateStr: string): string {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return WEEKDAY_ABBR[new Date(y, m - 1, d).getDay()];
+}
+const WEEKDAY_TITLE = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
+function weekdayTitle(dateStr: string): string {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return WEEKDAY_TITLE[new Date(y, m - 1, d).getDay()];
+}
+
 export function IntentPanel({
   theme, isDarkMode, selectedDateStr, todayStr, insetsBottom,
 }: {
@@ -89,35 +104,49 @@ export function IntentPanel({
     paddingBottom: (Math.max(insetsBottom, 16) + 16) * (1 - kbAnim.progress.value),
   }));
 
-  // ── Selected-day derived values ──
-  // Intent mode fires on today + tomorrow; past days get the read-only mirror.
-  const tomorrowDateStr = useMemo(() => addDaysStr(todayStr, 1), [todayStr]);
-  const isTodaySelected = selectedDateStr === todayStr;
-  const isTomorrowSelected = selectedDateStr === tomorrowDateStr;
-  const showIntentSection = isTodaySelected || isTomorrowSelected;
-  const isPastSelected = selectedDateStr < todayStr;
+  // ── Selected-day classification ──
+  // Editable window = TODAY + the next 3 days (4 total). Each zone has its own
+  // capabilities:
+  //
+  //   Zone            Add   Check   Move
+  //   2+ days ago      no    no     none            (frozen record)
+  //   Yesterday        no    yes    push -> today   (one-day grace)
+  //   Today            yes   yes    push -> tomorrow
+  //   +1 / +2 / +3     yes   yes    pull <- today
+  //
+  // Yesterday is checkable (you may have just forgotten to tick it — the same
+  // grace the Habits grid gives) and pushable into today, but you can't ADD to
+  // it. Push is always a single "+1 day" hop (yesterday->today, today->tomorrow);
+  // pull always lands on today. Anything older than yesterday is frozen history.
+  const yesterdayDateStr = useMemo(() => addDaysStr(todayStr, -1), [todayStr]);
+  const tomorrowDateStr  = useMemo(() => addDaysStr(todayStr, 1), [todayStr]);
+  const windowEndStr     = useMemo(() => addDaysStr(todayStr, 3), [todayStr]);
 
-  // Intent items pinned to the SELECTED day. Sorted incomplete-first, then
-  // completed; within each group, oldest-first.
+  const isTodaySelected     = selectedDateStr === todayStr;
+  const isFutureInWindow    = selectedDateStr > todayStr && selectedDateStr <= windowEndStr;
+  const isYesterdaySelected = selectedDateStr === yesterdayDateStr;
+  const isOlderPast         = selectedDateStr < yesterdayDateStr;
+  // "Active" = the add + check + move days (today and the 3 future days).
+  const isActiveDay = isTodaySelected || isFutureInWindow;
+
+  // Intent items pinned to the SELECTED day — same filter + sort for every zone
+  // (incomplete first, then completed; oldest-first within each group).
   const selectedDayIntents = useMemo(() => {
-    if (!showIntentSection) return [];
     const mine = intents.filter(i => i.date === selectedDateStr);
     return [...mine].sort((a, b) => {
       if (a.completed !== b.completed) return a.completed ? 1 : -1;
       return a.createdAt - b.createdAt;
     });
-  }, [intents, selectedDateStr, showIntentSection]);
+  }, [intents, selectedDateStr]);
   const selectedDayIntentsDoneCount = useMemo(() => selectedDayIntents.filter(i => i.completed).length, [selectedDayIntents]);
 
-  // Past-day intents — read-only mirror of what the user intended that day.
-  const pastDayIntents = useMemo(() => {
-    if (!isPastSelected) return [];
-    const mine = intents.filter(i => i.date === selectedDateStr);
-    return [...mine].sort((a, b) => {
-      if (a.completed !== b.completed) return a.completed ? 1 : -1;
-      return a.createdAt - b.createdAt;
-    });
-  }, [intents, selectedDateStr, isPastSelected]);
+  // Header label / empty-state word for the active block.
+  const activeDayLabel = isTodaySelected ? 'TODAY'
+    : selectedDateStr === tomorrowDateStr ? 'TOMORROW'
+    : weekdayAbbr(selectedDateStr);
+  const activeDayWord = isTodaySelected ? 'today'
+    : selectedDateStr === tomorrowDateStr ? 'tomorrow'
+    : weekdayTitle(selectedDateStr);
 
   // ── Handlers ──
   const openIntentModal = useCallback((date: string) => {
@@ -144,20 +173,20 @@ export function IntentPanel({
 
   return (
     <>
-      {/* ── INTENT (today + tomorrow) ── the calm entry's first question.
+      {/* ── INTENT (today + next 3 days) ── the calm entry's first question.
            Each row is a checkbox + label + (optional) source-type icon.
-           Long-press → detail/drop. Push moves un-checked items to tomorrow;
-           3rd push fires the rethink prompt. Only today/tomorrow are editable. */}
-      {showIntentSection && (
+           Long-press → detail/drop. Today's un-done items push to tomorrow;
+           future items pull back to today; 3rd push fires the rethink prompt. */}
+      {isActiveDay && (
         <View style={{
           marginBottom: 18, paddingHorizontal: 14, paddingVertical: 12,
           borderRadius: 14, borderWidth: 1, borderColor: theme.border,
-          borderStyle: isTomorrowSelected ? 'dashed' : 'solid',
+          borderStyle: isTodaySelected ? 'solid' : 'dashed',
           backgroundColor: theme.surface,
         }}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: selectedDayIntents.length > 0 ? 10 : 0 }}>
             <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 1.8 }}>
-              {isTodaySelected ? 'TODAY' : 'TOMORROW'}{selectedDayIntents.length > 0 ? `  ·  ${selectedDayIntentsDoneCount}/${selectedDayIntents.length}` : ''}
+              {activeDayLabel}{selectedDayIntents.length > 0 ? `  ·  ${selectedDayIntentsDoneCount}/${selectedDayIntents.length}` : ''}
             </Text>
             <TouchableOpacity onPress={() => openIntentModal(selectedDateStr)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
               <Feather name="plus" size={12} color={theme.textMain} />
@@ -166,7 +195,7 @@ export function IntentPanel({
           </View>
           {selectedDayIntents.length === 0 ? (
             <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '500', fontStyle: 'italic', opacity: 0.7, marginTop: 4 }}>
-              {isTodaySelected ? 'Nothing set for today. Drop one in.' : 'Set up tomorrow.'}
+              {isTodaySelected ? 'Nothing set for today. Drop one in.' : `Set up ${activeDayWord}.`}
             </Text>
           ) : (
             selectedDayIntents.map((it, idx) => {
@@ -226,10 +255,10 @@ export function IntentPanel({
                   {sourceIcon && (
                     <Feather name={sourceIcon} size={11} color={theme.textSub} style={{ opacity: 0.65 }} />
                   )}
-                  {/* Push / pull — icon-only (the today/tomorrow context is in the
-                      header). Today's un-done items: arrow-right pushes to tomorrow.
-                      Tomorrow's un-done items: arrow-left pulls back to today (no
-                      counter increment — pulling forward is a correction). */}
+                  {/* Push / pull — icon-only (the day context is in the header).
+                      Today's un-done items: arrow-right pushes to tomorrow.
+                      Future un-done items: arrow-left pulls back to today (the
+                      store rewinds one push when an item is pulled forward). */}
                   {!it.completed && it.date === todayStr && (
                     <TouchableOpacity
                       onPress={(e) => { e.stopPropagation?.(); handlePushIntent(it.id); }}
@@ -239,7 +268,7 @@ export function IntentPanel({
                       <Feather name="arrow-right" size={15} color={theme.textSub} style={{ opacity: 0.75 }} />
                     </TouchableOpacity>
                   )}
-                  {!it.completed && it.date === tomorrowDateStr && (
+                  {!it.completed && isFutureInWindow && (
                     <TouchableOpacity
                       onPress={(e) => { e.stopPropagation?.(); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); shipIntentBackToToday(it.id); }}
                       hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
@@ -255,11 +284,91 @@ export function IntentPanel({
         </View>
       )}
 
-      {/* ── PAST INTENTS (read-only) ── mirror what the user intended that day.
+      {/* ── YESTERDAY (grace) ── one-day window to tick a forgotten intent or
+           push an unfinished one into today. Check-off + push only — no add, no
+           edit. Mirrors the back-fill grace the Habits grid gives yesterday. */}
+      {isYesterdaySelected && selectedDayIntents.length > 0 && (
+        <View style={{
+          marginBottom: 18, paddingHorizontal: 14, paddingVertical: 12,
+          borderRadius: 14, borderWidth: 1, borderColor: theme.border,
+          backgroundColor: theme.surface,
+        }}>
+          <View style={{ marginBottom: 10 }}>
+            <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 1.8 }}>
+              YESTERDAY  ·  {selectedDayIntentsDoneCount}/{selectedDayIntents.length}
+            </Text>
+          </View>
+          {selectedDayIntents.map((it, idx) => {
+            const sourceIcon: keyof typeof Feather.glyphMap | null =
+              it.sourceType === 'task' ? 'check-square'
+              : it.sourceType === 'habit' ? 'target'
+              : it.sourceType === 'challenge' ? 'flag'
+              : null;
+            const isLast = idx === selectedDayIntents.length - 1;
+            return (
+              <TouchableOpacity
+                key={it.id}
+                activeOpacity={0.7}
+                onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); toggleIntent(it.id); }}
+                style={{
+                  flexDirection: 'row', alignItems: 'center', gap: 10,
+                  paddingVertical: 9,
+                  borderBottomWidth: isLast ? 0 : 1,
+                  borderBottomColor: theme.border,
+                }}
+              >
+                {/* Checkbox — tappable: yesterday's grace lets you tick a day you
+                    forgot to close, same as the Habits grid. */}
+                <View style={{
+                  width: 18, height: 18, borderRadius: 5,
+                  borderWidth: 1.5, borderColor: it.completed ? theme.textMain : theme.border,
+                  backgroundColor: it.completed ? theme.textMain : 'transparent',
+                  alignItems: 'center', justifyContent: 'center',
+                }}>
+                  {it.completed && <Feather name="check" size={11} color={theme.bg} />}
+                </View>
+                <Text
+                  numberOfLines={2}
+                  style={[{
+                    flex: 1, color: it.completed ? theme.textSub : theme.textMain,
+                    fontSize: 13.5, fontWeight: '600', lineHeight: 18,
+                    textDecorationLine: it.completed ? 'line-through' : 'none',
+                    opacity: it.completed ? 0.55 : 1,
+                  }, rtlTextStyle(it.label)]}
+                >
+                  {it.label}
+                </Text>
+                {it.pushCount > 0 && !it.completed && (
+                  <View style={{ paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, backgroundColor: hexToRgba('#F59E0B', 0.12) }}>
+                    <Text style={{ color: '#F59E0B', fontSize: 9, fontWeight: '900', letterSpacing: 0.5 }}>↑{it.pushCount}</Text>
+                  </View>
+                )}
+                {sourceIcon && (
+                  <Feather name={sourceIcon} size={11} color={theme.textSub} style={{ opacity: 0.65 }} />
+                )}
+                {/* Push yesterday's unfinished intent into today (a single +1-day
+                    hop). No check-off-after-the-fact for the date itself — the
+                    discipline rule — but you can still carry the work forward. */}
+                {!it.completed && (
+                  <TouchableOpacity
+                    onPress={(e) => { e.stopPropagation?.(); handlePushIntent(it.id); }}
+                    hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                    style={{ paddingHorizontal: 4, paddingVertical: 2 }}
+                  >
+                    <Feather name="arrow-right" size={15} color={theme.textSub} style={{ opacity: 0.75 }} />
+                  </TouchableOpacity>
+                )}
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      )}
+
+      {/* ── PAST INTENTS (read-only) ── 2+ days ago: mirror what was intended.
            Visible only — no toggle, no push, no edit, no delete. The past is a
            record. Linked intents can still be retroactively ticked by completing
            the underlying source from its own tab. */}
-      {isPastSelected && pastDayIntents.length > 0 && (
+      {isOlderPast && selectedDayIntents.length > 0 && (
         <View style={{
           marginBottom: 18, paddingHorizontal: 14, paddingVertical: 12,
           borderRadius: 14, borderWidth: 1, borderColor: theme.border,
@@ -268,16 +377,16 @@ export function IntentPanel({
         }}>
           <View style={{ marginBottom: 10 }}>
             <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 1.8 }}>
-              WAS INTENDED  ·  {pastDayIntents.filter(i => i.completed).length}/{pastDayIntents.length}
+              WAS INTENDED  ·  {selectedDayIntentsDoneCount}/{selectedDayIntents.length}
             </Text>
           </View>
-          {pastDayIntents.map((it, idx) => {
+          {selectedDayIntents.map((it, idx) => {
             const sourceIcon: keyof typeof Feather.glyphMap | null =
               it.sourceType === 'task' ? 'check-square'
               : it.sourceType === 'habit' ? 'target'
               : it.sourceType === 'challenge' ? 'flag'
               : null;
-            const isLast = idx === pastDayIntents.length - 1;
+            const isLast = idx === selectedDayIntents.length - 1;
             return (
               <View
                 key={it.id}
@@ -288,7 +397,8 @@ export function IntentPanel({
                   borderBottomColor: theme.border,
                 }}
               >
-                {/* Static checkbox visual — same shape as today's, no tap target. */}
+                {/* Static checkbox visual — same shape as today's, no tap target.
+                    2+ days old is a frozen record: no toggle, no push. */}
                 <View style={{
                   width: 18, height: 18, borderRadius: 5,
                   borderWidth: 1.5, borderColor: it.completed ? theme.textMain : theme.border,

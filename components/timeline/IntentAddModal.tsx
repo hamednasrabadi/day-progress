@@ -81,7 +81,16 @@ export function IntentAddModal({
     [challenges, takenKey]
   );
 
-  const dateLabel = targetDate === todayStr ? 'today' : 'tomorrow';
+  // today / tomorrow / weekday ("Wed") — the add window now spans today + 3 days.
+  const dateLabel = useMemo(() => {
+    if (targetDate === todayStr) return 'today';
+    const [y, m, d] = todayStr.split('-').map(Number);
+    const tmr = new Date(y, m - 1, d + 1);
+    const tmrStr = `${tmr.getFullYear()}-${String(tmr.getMonth() + 1).padStart(2, '0')}-${String(tmr.getDate()).padStart(2, '0')}`;
+    if (targetDate === tmrStr) return 'tomorrow';
+    const [ty, tm, td] = targetDate.split('-').map(Number);
+    return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date(ty, tm - 1, td).getDay()];
+  }, [targetDate, todayStr]);
 
   const TABS: { key: typeof tab; label: string }[] = [
     { key: 'custom',    label: 'Custom' },
