@@ -51,10 +51,7 @@ app-example
 /ios
 /android
 
-# Local-only — personal planning notes + code backups, not for the repo
-backup_code/
-action_plan.md
-research.md
-
-# Pitch-prep notes — personal, never committed (covers .md, .pdf, future variants)
-PITCH-PREP*
+# Local-only — your private workspace, never committed. Research, pitch prep,
+# planning notes, code backups, scratch — anything you don't want in the repo.
+# Just drop a new file in /local instead of adding a new ignore rule each time.
+/local/
