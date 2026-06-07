@@ -1214,6 +1214,20 @@ const LockScreen = ({ focusHrs, tasksDone, habitScore, promisesKept, deepWorkUnl
     return () => ringAnim.removeListener(id);
   }, [metCount]);
 
+  // The listener above only fires while ringAnim is animating — i.e. during the
+  // one-time mount sweep. Once it rests at 1 it never fires again, so a later
+  // metCount change (the user meets/un-meets a condition on another tab, then
+  // returns to this freezeOnBlur tab) moves the ring + bars but leaves the focal
+  // number stale until an app restart remounts the screen. Snap the number to
+  // the true count on any real change; the mount count-up still plays first.
+  const prevMet = useRef(metCount);
+  useEffect(() => {
+    if (prevMet.current !== metCount) {
+      prevMet.current = metCount;
+      setDisplayCount(metCount);
+    }
+  }, [metCount]);
+
   // Tapping the earned button confirms it (the button morphs to "UNLOCKED"),
   // then hands off to the full-screen ceremony, which opens the gate when done.
   const handleUnlock = () => {
@@ -1273,7 +1287,6 @@ const LockScreen = ({ focusHrs, tasksDone, habitScore, promisesKept, deepWorkUnl
 // reductions over tasks/habits/sessions) never instantiates. Cuts the
 // "challenges tab takes a while to open" cost for unlocked users.
 const LockGate = ({ onUnlock, theme }: { onUnlock: () => void; theme: any }) => {
-  const tasks = useAppStore(s => s.tasks);
   const deepWorkSessions = useAppStore(s => s.deepWorkSessions);
   const promiseStats = useAppStore(s => s.promiseStats);
   const allHabits = useAppStore(s => s.habits);
@@ -1288,10 +1301,10 @@ const LockGate = ({ onUnlock, theme }: { onUnlock: () => void; theme: any }) => 
     () => deepWorkSessions.reduce((acc, s) => acc + (s.durationMs || 0), 0) / 3_600_000,
     [deepWorkSessions]
   );
-  const tasksDone = useMemo(
-    () => tasks.filter(t => t.completed && t.status !== 'trash').length,
-    [tasks]
-  );
+  // Sticky lifetime completed-task count from the store — NOT a filter over the
+  // live list, so deleting/sweeping a done task no longer reverts this gate's
+  // progress; only un-checking a task lowers it. (Was: tasks.filter(...).length.)
+  const tasksDone = useAppStore(s => s.tasksCompletedCount ?? 0);
   const habitScore = useMemo(() => {
     const d = new Date();
     const todayStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;

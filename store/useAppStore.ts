@@ -448,6 +448,28 @@ export type WeeklyReflection = {
 const DEFAULT_HABITS: Habit[] = [];
 const DEFAULT_PROJECTS: Project[] = [];
 const DEFAULT_TASKS: Task[] = [];
+
+// Net change in completed-task count across a task-array mutation. Counts ONLY
+// tasks present in BOTH snapshots: completing flips false→true (+1), un-checking
+// flips true→false (−1). A task that LEAVES the array (deleted, swept, or removed
+// as an inbox "done" task) is ignored — completing a task is an event that must
+// not be undone by later deleting it. This is the whole reason the count is a
+// stored counter instead of `tasks.filter(t => t.completed).length`, which
+// silently reverted unlock progress whenever a done task was trashed/swept.
+function completedTaskDelta(prev: Task[], next: Task[]): number {
+  if (prev === next || !Array.isArray(prev) || !Array.isArray(next)) return 0;
+  const prevDone = new Map<string, boolean>();
+  for (const t of prev) prevDone.set(t.id, !!t.completed);
+  let delta = 0;
+  for (const t of next) {
+    if (!prevDone.has(t.id)) continue;        // newly added → not a completion event
+    const was = prevDone.get(t.id)!;
+    const now = !!t.completed;
+    if (now && !was) delta++;
+    else if (!now && was) delta--;
+  }
+  return delta;
+}
 export const DEFAULT_NOTES: Note[] = [];
 
 // ─── APP STATE INTERFACE ───
@@ -498,6 +520,9 @@ interface AppState {
   tasks: Task[];
   projects: Project[];
   setTasks: (tasks: Task[]) => void;
+  // Sticky net count of completed tasks (see completedTaskDelta + v8→v9 migrate).
+  // Moves only on complete/un-check — never on delete/sweep of a done task.
+  tasksCompletedCount: number;
   setProjects: (projects: Project[]) => void;
   addOrUpdateProject: (project: Project) => void;
   deleteProject: (id: string) => void;
@@ -895,7 +920,15 @@ export const useAppStore = create<AppState>()(
       // ── Tasks & Projects ──
       tasks: DEFAULT_TASKS,
       projects: DEFAULT_PROJECTS,
-      setTasks: (tasks) => set({ tasks }),
+      // setTasks also keeps the sticky completed-task counter in step: it diffs
+      // the completed flag per surviving task id, so completing/un-completing moves
+      // the count while deleting/sweeping a done task (it leaves the array) never
+      // does. The other completion funnel is toggleIntent's task branch.
+      setTasks: (tasks) => set((s) => ({
+        tasks,
+        tasksCompletedCount: Math.max(0, (s.tasksCompletedCount ?? 0) + completedTaskDelta(s.tasks, tasks)),
+      })),
+      tasksCompletedCount: 0,
       setProjects: (projects) => set({ projects }),
 
       // Monotonic creation counter for the SUBTASKS / RECURRING / PROJECTS
@@ -1285,7 +1318,9 @@ export const useAppStore = create<AppState>()(
           const tasks = s.tasks.map(t => t.id === sourceId
             ? { ...t, completed: done, completedAt: done ? now : undefined }
             : t);
-          return { intents, tasks };
+          // Same sticky-counter bookkeeping as setTasks — completing/un-completing
+          // a task via its linked intent must move the count too.
+          return { intents, tasks, tasksCompletedCount: Math.max(0, (s.tasksCompletedCount ?? 0) + completedTaskDelta(s.tasks, tasks)) };
         }
 
         if (sourceType === 'challenge') {
@@ -1459,6 +1494,7 @@ export const useAppStore = create<AppState>()(
         tasks: DEFAULT_TASKS,
         projects: DEFAULT_PROJECTS,
         totalTasksCreated: 0,
+        tasksCompletedCount: 0,
         promiseStats: {
           madeTotal: 0, keptTotal: 0, brokenTotal: 0,
           monthKey: '', monthlyMade: 0, monthlyKept: 0, monthlyBroken: 0,
@@ -1499,7 +1535,7 @@ export const useAppStore = create<AppState>()(
       //  whispersSeen array→record, unlocks→unlockedFeatures, etc.)
       name: STORAGE_NAME,
       storage: createJSONStorage(() => zustandStorage),
-      version: 8,
+      version: 9,
       migrate: (persistedState: any, version: number) => {
         // SAFETY 1 — automatic pre-migration backup. migrate runs ONLY when an
         // update changes the schema version: the one moment a bug could corrupt
@@ -1623,6 +1659,18 @@ export const useAppStore = create<AppState>()(
         // partially-written blob can never throw inside a renderer. Idempotent.
         if (version < 8) {
           next = sanitizeStateSlice(next);
+        }
+        // v8 → v9: completed-task progress became a sticky counter
+        // (tasksCompletedCount) instead of being re-derived from the live task
+        // list — so deleting/sweeping a done task no longer reverts Challenges
+        // unlock progress. Seed it from the current completed count so existing
+        // users keep their standing; from here it only moves on complete/un-check.
+        if (version < 9) {
+          next = { ...next };
+          if (typeof next.tasksCompletedCount !== 'number') {
+            const ts = Array.isArray(next.tasks) ? next.tasks : [];
+            next.tasksCompletedCount = ts.filter((t: any) => t && t.completed && t.status !== 'trash').length;
+          }
         }
         return next;
         } catch (e) {
