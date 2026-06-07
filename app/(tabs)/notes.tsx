@@ -686,6 +686,9 @@ export default function NotesScreen() {
   const [confirmModal, setConfirmModal] = useState<{ title: string; message: string; label: string; isSuccess?: boolean; onConfirm: () => void; } | null>(null);
 
   const vaultSheetRef = useRef<BottomSheetModal>(null);
+  // Close the vault when leaving this tab — a sheet shouldn't linger open across
+  // a tab switch. useFocusEffect's cleanup runs on blur.
+  useFocusEffect(useCallback(() => () => vaultSheetRef.current?.dismiss(), []));
   const [sheetIndex, setSheetIndex] = useState(-1);
   const [vaultTab, setVaultTab] = useState<"archived" | "trash" | "capsules">("archived");
 

@@ -572,6 +572,9 @@ export default function TodoScreen() {
 
   const [taskModalVisible, setTaskModalVisible] = useState(false);
   const vaultSheetRef = useRef<BottomSheetModal>(null);
+  // Close the vault when leaving this tab — a sheet shouldn't linger open across
+  // a tab switch. useFocusEffect's cleanup runs on blur.
+  useFocusEffect(useCallback(() => () => vaultSheetRef.current?.dismiss(), []));
   const projectFolderSheetRef = useRef<BottomSheetModal>(null);
   const projectModalRef = useRef<BottomSheetModal>(null);
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);

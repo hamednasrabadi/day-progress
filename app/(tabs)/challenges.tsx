@@ -2840,6 +2840,9 @@ export default function ChallengesScreen() {
   const [addEditOpen, setAddEditOpen] = useState(false);
   const presetsSheetRef = useRef<BottomSheetModal>(null);
   const vaultSheetRef = useRef<BottomSheetModal>(null);
+  // Close the vault when leaving this tab — a sheet shouldn't linger open across
+  // a tab switch. useFocusEffect's cleanup runs on blur.
+  useFocusEffect(useCallback(() => () => vaultSheetRef.current?.dismiss(), []));
   // Graveyard is now its own full-screen surface, not a tab in the
   // vault sheet. Vault becomes trash-only — kept as a sheet because
   // trash actions (restore / delete forever) are transactional.
