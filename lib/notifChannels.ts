@@ -26,6 +26,10 @@ export const REMINDER_CHANNEL_ID = 'quick-reminders';
 // reminders. MAX importance: a deadline closing is exactly when the app
 // should interrupt.
 export const CHALLENGE_CHANNEL_ID = 'challenge-deadlines';
+// Deep Work — the "time's up" alert fired when a focus timer completes. Scheduled
+// via a notifee TIMESTAMP trigger at session start so it lands even if the app was
+// backgrounded or killed mid-session. Own channel so it's mutable independently.
+export const DEEPWORK_CHANNEL_ID = 'deep-work';
 
 let ready = false;
 
@@ -70,6 +74,16 @@ export async function ensureAppChannels(): Promise<void> {
   await Notifications.setNotificationChannelAsync(CHALLENGE_CHANNEL_ID, {
     name: 'Challenge deadlines',
     importance: Notifications.AndroidImportance.MAX,
+    sound: 'default',
+  });
+
+  // Deep Work — fired by notifee via a TIMESTAMP trigger scheduled at session
+  // start, so "time's up" reaches the user even if the app was backgrounded or
+  // killed mid-session. HIGH importance: a completed focus block should surface.
+  await notifee.createChannel({
+    id: DEEPWORK_CHANNEL_ID,
+    name: 'Deep Work timer',
+    importance: AndroidImportance.HIGH,
     sound: 'default',
   });
 

@@ -348,6 +348,20 @@ export type DeepWorkSession = {
   rating?: DayRating;           // optional self-rating, reuses 'strong'|'ok'|'rough'
 };
 
+// The CURRENTLY-RUNNING Deep Work session. Persisted (unlike the old per-screen
+// useState it replaces) so a focus session survives the JS thread being
+// suspended in the background OR the process being killed outright — on relaunch
+// we recompute remaining time from `startedAt` against the wall clock and either
+// resume the timer or route straight to reflection. Cleared on complete/discard.
+export type ActiveDeepWork = {
+  startedAt: number;            // ms timestamp when Begin was tapped
+  durationMs: number;           // planned length (0 / ignored for open count-up)
+  intent: DeepWorkIntent;
+  targetId?: string;
+  targetTitle: string;
+  open: boolean;                // open-ended count-up — no scheduled end alarm
+};
+
 // ─── DIARY TYPES ───
 // Lightweight Timeline-attached reflections. Each entry is a single piece of text
 // pinned to a specific YYYY-MM-DD. Foundation for the future Canvas rollup, which
@@ -678,6 +692,9 @@ interface AppState {
   deepWorkSessions: DeepWorkSession[];
   addDeepWorkSession: (session: DeepWorkSession) => void;
   deleteDeepWorkSession: (id: string) => void;
+  // The active (running) session — persisted so it survives backgrounding/kill.
+  activeDeepWork: ActiveDeepWork | null;
+  setActiveDeepWork: (s: ActiveDeepWork | null) => void;
 
   // ── Diary ──
   diaryEntries: DiaryEntry[];
@@ -1192,6 +1209,8 @@ export const useAppStore = create<AppState>()(
       deepWorkSessions: [],
       addDeepWorkSession: (session) => set((s) => ({ deepWorkSessions: [...s.deepWorkSessions, session] })),
       deleteDeepWorkSession: (id) => set((s) => ({ deepWorkSessions: s.deepWorkSessions.filter(x => x.id !== id) })),
+      activeDeepWork: null,
+      setActiveDeepWork: (s) => set({ activeDeepWork: s }),
 
       // ── Diary ──
       diaryEntries: [],
@@ -1444,6 +1463,7 @@ export const useAppStore = create<AppState>()(
         achievements: [],
         challengesSeeded: false,
         deepWorkSessions: [],
+        activeDeepWork: null,
         diaryEntries: [],
         intents: [],
         weeklyReflections: {},

@@ -12,13 +12,14 @@ import { GestureHandlerRootView, Swipeable, ScrollView as GHScrollView } from 'r
 import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
 import { KeyboardStickyView, KeyboardAvoidingView, useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller';
 import * as Notifications from 'expo-notifications';
-import { TASK_CHANNEL_ID } from '../../lib/notifChannels';
+import notifee, { TriggerType, AlarmType } from '@notifee/react-native';
+import { TASK_CHANNEL_ID, DEEPWORK_CHANNEL_ID, ensureAppChannels } from '../../lib/notifChannels';
 import Animated, { FadeInDown, FadeOut, FadeIn, LinearTransition, Easing, useAnimatedStyle } from 'react-native-reanimated';
 import { BlurView } from 'expo-blur';
 
 import { FlashList } from '@shopify/flash-list';
 import { BottomSheetModal, BottomSheetModalProvider, BottomSheetBackdrop, BottomSheetScrollView, BottomSheetTextInput } from '@gorhom/bottom-sheet';
-import { useAppStore, Task, Project, SubTask, Priority, CalendarSystem, RecurType, UrgencyLevel, TaskStatus, ProjectStatus, DeepWorkIntent, DeepWorkSession, Challenge, Habit, DayRating, makeLedgerEntry } from '../../store/useAppStore';
+import { useAppStore, Task, Project, SubTask, Priority, CalendarSystem, RecurType, UrgencyLevel, TaskStatus, ProjectStatus, DeepWorkIntent, DeepWorkSession, ActiveDeepWork, Challenge, Habit, DayRating, makeLedgerEntry } from '../../store/useAppStore';
 import { FEATURE_IDS, useIsUnlocked, useIsNew, isUnlocked } from '../../lib/unlocks';
 import { useTabBarMetrics } from '../../lib/tabBarMetrics';
 
@@ -669,7 +670,12 @@ export default function TodoScreen() {
   const [dwDurationMin, setDwDurationMin] = useState<number>(45);
   const [dwCustomMin, setDwCustomMin] = useState<string>('');
   const [dwOpenMode, setDwOpenMode] = useState<boolean>(false);
-  const [dwSession, setDwSession] = useState<{ startedAt: number; durationMs: number; intent: DeepWorkIntent; targetId?: string; targetTitle: string; open: boolean } | null>(null);
+  // The active Deep Work session now lives in the persisted store (activeDeepWork)
+  // so it survives the JS thread being suspended in the background or the process
+  // being killed. dwSession/setDwSession keep their old names, so the rest of the
+  // screen is unchanged; a mount effect below rehydrates the focus UI on relaunch.
+  const dwSession = useAppStore(s => s.activeDeepWork);
+  const setDwSession = useAppStore(s => s.setActiveDeepWork);
   const [dwNow, setDwNow] = useState<number>(Date.now());
   const [dwReflectionRating, setDwReflectionRating] = useState<DayRating | null>(null);
   const [dwReflectionText, setDwReflectionText] = useState<string>('');
@@ -1232,6 +1238,38 @@ export default function TodoScreen() {
     setDwPickerVisible(true);
   }, []);
 
+  // ── L1: schedule the OS-level "time's up" alarm at session start ──
+  // A focus timer must NOT depend on the JS thread staying alive — Android
+  // suspends background JS and aggressive OEM skins kill the process within
+  // minutes. So we hand the end time to the OS as a notifee TIMESTAMP trigger
+  // (exact, via SCHEDULE_EXACT_ALARM), which fires even if we were killed long
+  // ago. The id derives from startedAt so we can cancel on early-exit/completion.
+  const scheduleDeepWorkEnd = useCallback(async (session: ActiveDeepWork) => {
+    if (Platform.OS !== 'android') return;     // notifee triggers — Android target
+    if (session.open) return;                  // count-up sessions have no fixed end
+    const fireAt = session.startedAt + session.durationMs;
+    if (fireAt <= Date.now() + 1500) return;   // too short to be worth scheduling
+    try {
+      await ensureAppChannels();
+      await notifee.createTriggerNotification(
+        {
+          id: `dw_end_${session.startedAt}`,
+          title: 'Deep Work complete',
+          body: session.targetTitle ? `Time's up — ${session.targetTitle}` : "Time's up.",
+          android: { channelId: DEEPWORK_CHANNEL_ID, pressAction: { id: 'default' } },
+          ios: { sound: 'default' },
+        },
+        // Exact + fires through Doze, so a 25-min timer can't be deferred by the
+        // OS's idle batching. Backed by SCHEDULE_EXACT_ALARM (declared in app.json).
+        { type: TriggerType.TIMESTAMP, timestamp: fireAt, alarmManager: { type: AlarmType.SET_EXACT_AND_ALLOW_WHILE_IDLE } },
+      );
+    } catch (e) { console.warn('Deep Work end-alarm schedule failed', e); }
+  }, []);
+  const cancelDeepWorkEnd = useCallback((startedAt?: number) => {
+    if (startedAt == null) return;
+    notifee.cancelTriggerNotification(`dw_end_${startedAt}`).catch(() => {});
+  }, []);
+
   const beginDeepWork = useCallback(() => {
     let durationMs: number;
     if (dwOpenMode) {
@@ -1259,22 +1297,31 @@ export default function TodoScreen() {
       return;
     }
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-    setDwSession({
+    // Defensive: if a prior session was never resolved, drop its pending alarm
+    // before this one replaces it — otherwise the old end-time could still fire.
+    const prev = useAppStore.getState().activeDeepWork;
+    if (prev) cancelDeepWorkEnd(prev.startedAt);
+    const session: ActiveDeepWork = {
       startedAt: Date.now(),
       durationMs,
       intent: dwIntent,
       targetId: dwIntent === 'free' ? undefined : dwTargetId,
       targetTitle,
       open: dwOpenMode,
-    });
-    setDwNow(Date.now());
+    };
+    setDwSession(session);
+    setDwNow(session.startedAt);
     setDwPickerVisible(false);
     setDwFocusVisible(true);
-  }, [dwIntent, dwTargetId, dwFreeLabel, dwDurationMin, dwCustomMin, dwOpenMode, tasks, habits, challenges]);
+    // Hand the end time to the OS so completion survives a background kill.
+    scheduleDeepWorkEnd(session);
+  }, [dwIntent, dwTargetId, dwFreeLabel, dwDurationMin, dwCustomMin, dwOpenMode, tasks, habits, challenges, scheduleDeepWorkEnd, cancelDeepWorkEnd]);
 
   const cancelDeepWork = useCallback(() => {
     if (!dwSession) { setDwFocusVisible(false); return; }
     const elapsed = Math.max(0, Date.now() - dwSession.startedAt);
+    // Ending early — kill the scheduled "time's up" alarm so it can't fire later.
+    cancelDeepWorkEnd(dwSession.startedAt);
 
     // Open sessions: tapping cancel IS the natural completion (no fixed
     // duration to complete against). Celebrate, then route to reflection —
@@ -1318,7 +1365,7 @@ export default function TodoScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setDwFocusVisible(false);
     setDwSession(null);
-  }, [dwSession]);
+  }, [dwSession, cancelDeepWorkEnd]);
 
   useEffect(() => {
     if (!dwFocusVisible || !dwSession) return;
@@ -1329,6 +1376,9 @@ export default function TodoScreen() {
       const elapsed = now - dwSession.startedAt;
       if (elapsed >= dwSession.durationMs) {
         clearInterval(id);
+        // Completed in the foreground — cancel the OS alarm so it doesn't
+        // double-fire on top of the in-app celebration.
+        cancelDeepWorkEnd(dwSession.startedAt);
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         setTimeout(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy), 200);
         setDwCelebrating(true);
@@ -1343,10 +1393,35 @@ export default function TodoScreen() {
       }
     }, 500);
     return () => clearInterval(id);
-  }, [dwFocusVisible, dwSession]);
+  }, [dwFocusVisible, dwSession, cancelDeepWorkEnd]);
+
+  // ── L2: rehydrate the active session on mount ──
+  // activeDeepWork is persisted, so after a background kill (or any cold start)
+  // it's already in the store when this screen mounts. Restore the focus UI from
+  // wall-clock time: if the timer already elapsed while we were gone, jump to
+  // reflection; otherwise reopen the running timer (the interval recomputes from
+  // startedAt, and the end alarm, if still pending, is already scheduled).
+  const dwRehydratedRef = useRef(false);
+  useEffect(() => {
+    if (dwRehydratedRef.current) return;
+    dwRehydratedRef.current = true;
+    const s = useAppStore.getState().activeDeepWork;
+    if (!s) return;
+    setDwNow(Date.now());
+    if (s.open) { setDwFocusVisible(true); return; }   // count-up: just resume
+    if (Date.now() - s.startedAt >= s.durationMs) {
+      setDwReflectionRating(null);
+      setDwReflectionText('');
+      setDwMarkDone(false);
+      setDwReflectVisible(true);                         // finished while away
+    } else {
+      setDwFocusVisible(true);                           // resume the live timer
+    }
+  }, []);
 
   const saveDeepWorkReflection = useCallback(() => {
     if (!dwSession) { setDwReflectVisible(false); return; }
+    cancelDeepWorkEnd(dwSession.startedAt);
     const session: DeepWorkSession = {
       id: `dw_${dwSession.startedAt}`,
       startedAt: dwSession.startedAt,
@@ -1406,7 +1481,7 @@ export default function TodoScreen() {
     setDwReflectVisible(false);
     setDwSession(null);
     setDwMarkDone(false);
-  }, [dwSession, dwReflectionText, dwReflectionRating, dwMarkDone, addDeepWorkSession, setTasks]);
+  }, [dwSession, dwReflectionText, dwReflectionRating, dwMarkDone, addDeepWorkSession, setTasks, cancelDeepWorkEnd]);
 
   const skipDeepWorkReflection = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
