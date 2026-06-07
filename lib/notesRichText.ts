@@ -75,18 +75,25 @@ export function stripAllMarkdown(text: string): string {
 }
 
 /**
- * Direction detection helper — strips out the `{color}` spec inside
- * highlights so a line whose highlight uses an English color name doesn't
- * get pulled LTR by that color word. The actual highlighted content stays
- * visible to isRtl, so it participates in the first-strong-character rule
- * the same way unhighlighted text does.
+ * Direction detection helper — reduces a line to the text whose first strong
+ * character should decide its direction, so callers can run isRtl on the
+ * content rather than on markup.
  *
- * So `=={pink}سلام!==` becomes `==سلام!==` here — the `==` markers are
- * direction-neutral, isRtl walks past them and resolves RTL on the Persian.
+ * 1) Strips a leading list/checkbox/heading marker ("[ ] ", "[x] ", "[X] ",
+ *    "- ", "# "). CRITICAL for checked items: the "x" in "[x]" is a strong LTR
+ *    character, so without this a checked Persian line ("[x] سلام") resolves
+ *    LTR while its unchecked form ("[ ] سلام") resolves RTL — the item flips
+ *    alignment the instant you tick it. The renderers slice these same markers
+ *    off for display, so direction must be judged on the content, not the box.
+ * 2) Strips the `{color}` spec inside highlights so a line whose highlight uses
+ *    an English color name ("=={pink}سلام!==" → "==سلام!==") isn't pulled LTR
+ *    by that color word; the highlighted content itself stays visible to isRtl.
  *
- * Highlight markers themselves are kept (no need to strip — they're
- * neutral). Bold/italic markers are kept for the same reason.
+ * Bare "==" highlight markers and bold/italic markers are direction-neutral and
+ * kept.
  */
 export function lineDirectionText(line: string): string {
-  return line.replace(/==\{[^}]+\}/g, '==');
+  return line
+    .replace(/^(\[[ xX]\] |- |# )/, '')
+    .replace(/==\{[^}]+\}/g, '==');
 }
