@@ -1285,10 +1285,11 @@ export default function HabitsScreen() {
   }, [selectedDate, calendarType]);
 
   const globalStrength = useMemo(() => {
-    // The ONE grade number. Active (live) + retired (frozen) both count — same
+    // The ONE grade number. Active (live) + kept retired (frozen) count — same
     // set the chart modal uses — so the header score and the chart score can
-    // never disagree. Archived (long-paused) is excluded until it returns.
-    const counted = habits.filter(h => h.status === 'active' || h.status === 'retired');
+    // never disagree. Vanished retired habits are excluded ("delete from grade");
+    // archived (long-paused) is excluded until it returns.
+    const counted = habits.filter(h => h.status === 'active' || (h.status === 'retired' && !h.vanished));
     if (counted.length === 0) return null;
     const todayStr = getFormatDateStr();
     const scores = counted.map(h => calculateStrengthScore(h, todayStr));
@@ -1852,12 +1853,12 @@ export default function HabitsScreen() {
             <Pressable onPress={() => setShowStrengthHistory(false)} style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' }}>
               <Pressable onPress={() => {}} style={{ backgroundColor: theme.surface, borderTopLeftRadius: 32, borderTopRightRadius: 32, paddingTop: 28, paddingBottom: 48, paddingHorizontal: 28, minHeight: '62%' }}>
                 {(() => {
-                  // Mirror calculateGlobalStrength: active (live scores) + retired
-                  // (frozen) both count toward the grade; archived (long-paused)
-                  // is excluded until it returns. This keeps the modal's number
+                  // Mirror calculateGlobalStrength: active (live scores) + kept
+                  // retired (frozen) count toward the grade; vanished retired and
+                  // archived (long-paused) are excluded. Keeps the modal's number
                   // consistent with the header grade chip.
                   const active = habits.filter(h => h.status === 'active');
-                  const retired = habits.filter(h => h.status === 'retired');
+                  const retired = habits.filter(h => h.status === 'retired' && !h.vanished);
                   const counted = [...active, ...retired];
                   if (counted.length === 0) {
                     return (

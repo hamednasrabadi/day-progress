@@ -83,8 +83,9 @@ export type Habit = {
   completionNotes?: Record<string, string>;
   // Set when status === 'retired'. retiredAt (YYYY-MM-DD) freezes the strength
   // score at the moment of retirement (no penalties accrue afterward). vanished
-  // hides the trophy from the Retired screen — but the frozen score is STILL
-  // counted in the grade (we respect past effort either way).
+  // hides the trophy from the Retired screen AND drops it from the grade — the
+  // "delete from my record" option for a habit you've dropped. A kept
+  // (non-vanished) retired habit stays in the grade as an earned trophy.
   retiredAt?: string;
   vanished?: boolean;
   // Long-pause (archive) windows. Each [from, to) range is a stretch the habit
@@ -491,7 +492,8 @@ interface AppState {
   deleteHabit: (id: string) => void;
   // Retire a habit: it leaves the active list but its earned score stays in the
   // grade, frozen at retiredAt. keep=false ("vanish") hides it from the Retired
-  // screen but still counts. retiredAt is a YYYY-MM-DD local date from the caller.
+  // screen AND removes it from the grade (delete-from-record). retiredAt is a
+  // YYYY-MM-DD local date from the caller.
   retireHabit: (id: string, keep: boolean, retiredAt: string) => void;
   // Bring a retired habit back to active. The retired stretch is recorded as a
   // pause window so it doesn't retroactively penalize the score (resumes from

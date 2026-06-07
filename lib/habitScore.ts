@@ -150,10 +150,11 @@ export function isDayConquered(habits: Habit[], dateStr: string): boolean {
  * habits as of `referenceDate`. 0 when no active habits exist.
  */
 export function calculateGlobalStrength(habits: Habit[], referenceDate: string): number {
-  // Active habits (live scores) AND retired habits (frozen at retiredAt) both
-  // count — the grade respects effort that's done, not just effort ongoing.
-  // Archived (long-paused) habits are excluded until they return.
-  const counted = habits.filter(h => h.status === 'active' || h.status === 'retired');
+  // Active habits (live scores) AND kept retired habits (frozen trophies) count
+  // — the grade respects effort that's done, not just effort ongoing. VANISHED
+  // retired habits are excluded: vanish is the "delete from the grade" option
+  // for a habit you've dropped. Archived (long-paused) habits are excluded too.
+  const counted = habits.filter(h => h.status === 'active' || (h.status === 'retired' && !h.vanished));
   if (counted.length === 0) return 0;
   const scores = counted.map(h => calculateStrengthScore(h, referenceDate));
   return Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
