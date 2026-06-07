@@ -15,10 +15,23 @@ import { sanitizeStateSlice } from '../lib/sanitize';
 // ─── STORAGE ───
 export const storage = createMMKV({ id: 'titan-storage' });
 
-// The persisted zustand store key. The trailing version starts a fresh store
-// when bumped; older bumps leave orphaned full-store blobs in this same MMKV
-// instance under their old names.
+// The persisted zustand store key.
+//
+// ⚠️  RELEASE SAFETY — do NOT bump this suffix (or the MMKV `id` above) in any
+// build shipped to real users. Bumping it starts a FRESH store: every user opens
+// to a blank app (their data is orphaned under the old key, and the cleanup just
+// below then deletes it). It was bumped freely during development to reset state
+// — that era is over now that real data exists. To change the data SHAPE between
+// releases, bump the persist `version` + add a `migrate` step (which upgrades
+// existing data in place); to add a brand-new field, do nothing (the default
+// merge backfills it). Older dev bumps left orphaned blobs, cleaned up below.
 const STORAGE_NAME = 'titan-app-storage-v28';
+
+// One rolling snapshot of the pre-migration blob, written by `migrate` below
+// right before it transforms data — a safety net so a buggy future migration is
+// always recoverable with zero manual export. Deliberately NOT matched by the
+// stale-blob cleanup regex, so it survives.
+const PREMIGRATE_BACKUP_KEY = 'titan-app-storage__premigrate_backup';
 
 // One-time housekeeping on cold start: drop the orphaned blobs left by older
 // STORAGE_NAME versions (titan-app-storage-v1..v27) that no current code reads,
@@ -1477,19 +1490,30 @@ export const useAppStore = create<AppState>()(
       }),
     }),
     {
-      // v23 → v24 reshapes the unlocks slice for the progressive-unlock
-      // foundation:
-      //   • whispersSeen: string[] → Record<string, boolean>
-      //   • unlocks       → unlockedFeatures
-      //   • unlocksAcknowledged → dotsSeen
-      //   • drops unlocksMigrated (no migration concept anymore — returning
-      //     users tap the "Restore your experience" link instead)
-      // Existing data is converted in-place; values from the old keys are
-      // preserved so a dev user's prior unlocks survive the bump.
+      // Persistence config. TWO independent version levers — don't conflate them:
+      //   • STORAGE_NAME suffix (above) = the physical key. Changing it = a fresh
+      //     store = DATA WIPE. Frozen for shipped builds.
+      //   • `version` + `migrate` (below) = the schema migrator: bump `version`
+      //     and add a step to upgrade existing data IN PLACE across an update.
+      // (The v0→v1 step below is the historical unlocks-slice reshape:
+      //  whispersSeen array→record, unlocks→unlockedFeatures, etc.)
       name: STORAGE_NAME,
       storage: createJSONStorage(() => zustandStorage),
       version: 8,
       migrate: (persistedState: any, version: number) => {
+        // SAFETY 1 — automatic pre-migration backup. migrate runs ONLY when an
+        // update changes the schema version: the one moment a bug could corrupt
+        // real data. Snapshot the incoming blob first, so the user's pre-update
+        // data is always recoverable with zero manual export.
+        try {
+          if (persistedState && typeof persistedState === 'object') {
+            storage.set(PREMIGRATE_BACKUP_KEY, JSON.stringify({ fromVersion: version, savedAt: Date.now(), state: persistedState }));
+          }
+        } catch {}
+        // SAFETY 2 — never let a migration bug nuke the store. If any step throws,
+        // fall back to the original persisted data unchanged (the default merge
+        // then backfills new fields). A shape mismatch beats a blank app.
+        try {
         if (!persistedState || typeof persistedState !== 'object') return persistedState;
         let next: any = persistedState;
         // v0 → v1: legacy unlock-key renames (dev installs predating the
@@ -1601,6 +1625,10 @@ export const useAppStore = create<AppState>()(
           next = sanitizeStateSlice(next);
         }
         return next;
+        } catch (e) {
+          console.warn('Store migration failed — kept pre-migration data as-is', e);
+          return persistedState;
+        }
       },
     }
   )
