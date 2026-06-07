@@ -20,6 +20,7 @@ import { FlashList } from '@shopify/flash-list';
 import { BottomSheetModal, BottomSheetModalProvider, BottomSheetBackdrop, BottomSheetScrollView, BottomSheetTextInput } from '@gorhom/bottom-sheet';
 import { useAppStore, Task, Project, SubTask, Priority, CalendarSystem, RecurType, UrgencyLevel, TaskStatus, ProjectStatus, DeepWorkIntent, DeepWorkSession, Challenge, Habit, DayRating, makeLedgerEntry } from '../../store/useAppStore';
 import { FEATURE_IDS, useIsUnlocked, useIsNew, isUnlocked } from '../../lib/unlocks';
+import { useTabBarMetrics } from '../../lib/tabBarMetrics';
 
 LogBox.ignoreLogs(['setLayoutAnimationEnabledExperimental', 'SafeAreaView has been deprecated']);
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -503,6 +504,11 @@ const TaskCard = React.memo(function TaskCard({
 export default function TodoScreen() {
   const insets = useSafeAreaInsets();
   const tabBarHeight = useBottomTabBarHeight();
+  // Exact rendered tab-bar height (measured via onLayout in AnimatedTabBar).
+  // The nav hook above is close but not pixel-identical to what the bar paints,
+  // so the quick-add bar keys its keyboard offset off this instead. Falls back
+  // to the hook value for the first frame before onLayout has fired.
+  const measuredTabBarH = useTabBarMetrics(s => s.height);
   const { height: windowH } = useWindowDimensions();
 
   const { tasks, projects, isDarkMode, calendarType, toggleCalendar, setTasks, setProjects, addOrUpdateProject, deleteProject, markWhisperSeen } = useAppStore();
@@ -2078,8 +2084,18 @@ export default function TodoScreen() {
             </View>
 
             {/* ── QUICK ADD BAR ── KeyboardStickyView glues it to the keyboard top ── */}
-            {/* offset.opened is SUBTRACTED from keyboard height, so positive = view sits lower. We pass tabBarHeight so the bar lands exactly on the keyboard top instead of tabBarHeight above it. */}
-            <KeyboardStickyView offset={{ closed: 0, opened: tabBarHeight }}>
+            {/* When open, translateY = (−keyboardHeight) + offset.opened, so a LARGER
+                positive `opened` drops the bar DOWN. The scene lays out above the tab
+                bar, so the bar's resting bottom sits a full tab-bar height off the
+                screen bottom — `opened` must equal that to land it flush on the
+                keyboard. useBottomTabBarHeight() ALREADY includes the tab bar's bottom
+                safe-area padding (AnimatedTabBar pads Math.max(insets.bottom,10)+6), so
+                do NOT add insets.bottom again — that double-counts the inset and drops
+                the bar ~half its height below the keyboard top.
+                We feed the MEASURED tab-bar height (not the nav hook) so the bar lands
+                pixel-flush on the keyboard; the hook is a few px off what the bar
+                actually paints. Falls back to the hook until the measurement lands. */}
+            <KeyboardStickyView offset={{ closed: 0, opened: measuredTabBarH || tabBarHeight }}>
               <View style={{ paddingHorizontal: 20, paddingVertical: 12, backgroundColor: theme.surface, borderTopWidth: 1, borderTopColor: theme.border }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: theme.bg, borderRadius: 16, paddingHorizontal: 16, borderWidth: 1, borderColor: theme.border }}>
                   <TextInput style={[{ flex: 1, color: theme.textMain, fontSize: 15, paddingVertical: 16, fontWeight: '600' }, persianSafeInputStyle, rtlInputStyle(quickTaskText)]} placeholder="Quick add to inbox..." placeholderTextColor={theme.textSub} value={quickTaskText} onChangeText={setQuickTaskText} onSubmitEditing={handleQuickAdd} returnKeyType="done" />

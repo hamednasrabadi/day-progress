@@ -29,6 +29,7 @@ import Animated, { useSharedValue, useDerivedValue, useAnimatedStyle, withSpring
 import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { FEATURE_IDS, useIsUnlocked, useIsNew, useDaysSinceInstall } from '../lib/unlocks';
 import { useAppStore } from '../store/useAppStore';
+import { useTabBarMetrics } from '../lib/tabBarMetrics';
 import { getTheme } from '../lib/timelineTheme';
 
 const ACCENT = '#3B82F6';     // active icon + label — a blue that reads on every theme
@@ -77,8 +78,15 @@ export default function AnimatedTabBar({ state, navigation }: BottomTabBarProps)
   const active = useSharedValue(state.index);
   useEffect(() => { active.value = state.index; }, [state.index]);
 
+  // Publish the bar's REAL rendered height so keyboard-anchored bars (Tasks
+  // quick-add) can sit flush on the keyboard. See lib/tabBarMetrics.
+  const setTabBarHeight = useTabBarMetrics(s => s.setHeight);
+
   return (
-    <View style={{ flexDirection: 'row', backgroundColor: theme.bg, borderTopWidth: 1, borderTopColor: theme.border, paddingTop: 10, paddingBottom: Math.max(insets.bottom, 10) + 6 }}>
+    <View
+      onLayout={e => setTabBarHeight(e.nativeEvent.layout.height)}
+      style={{ flexDirection: 'row', backgroundColor: theme.bg, borderTopWidth: 1, borderTopColor: theme.border, paddingTop: 10, paddingBottom: Math.max(insets.bottom, 10) + 6 }}
+    >
       {state.routes.map((route, index) => {
         if (route.name === 'index') return null;            // hidden redirect
         if (!META[route.name]) return null;                 // unknown route guard
