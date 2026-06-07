@@ -2451,7 +2451,7 @@ export default function TodoScreen() {
             </Modal>
 
             {/* VAULT SHEET */}
-            <BottomSheetModal ref={vaultSheetRef} snapPoints={snapPoints} onChange={setSheetIndex} backdropComponent={renderBackdrop} backgroundStyle={{ backgroundColor: theme.bg, borderRadius: 32 }} handleIndicatorStyle={{ backgroundColor: theme.border, width: 40, height: 5 }}>
+            <BottomSheetModal ref={vaultSheetRef} snapPoints={['100%']} enableDynamicSizing={false} index={0} topInset={insets.top} onChange={setSheetIndex} backdropComponent={renderBackdrop} backgroundStyle={{ backgroundColor: theme.bg, borderRadius: 32 }} handleIndicatorStyle={{ backgroundColor: theme.border, width: 40, height: 5 }}>
               <View style={{ paddingHorizontal: 24, paddingTop: 10, paddingBottom: 16, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                 <Text style={{ fontSize: 28, fontWeight: '900', color: theme.textMain, letterSpacing: -1 }}>Vault.</Text>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 18 }}>

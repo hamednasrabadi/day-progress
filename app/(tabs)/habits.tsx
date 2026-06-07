@@ -251,6 +251,20 @@ const makeLeftActions = (theme: any) => (p: any, d: RNAnimated.AnimatedInterpola
 };
 
 // eslint-disable-next-line react/display-name -- Swipeable render callback, not a component
+// Longest consecutive-day run in a habit's completion history — the "best streak"
+// stat shown on vault trophy medallions.
+function longestRun(dates: string[] = []): number {
+  if (!dates.length) return 0;
+  const set = [...new Set(dates)].sort();
+  let best = 1, run = 1;
+  for (let i = 1; i < set.length; i++) {
+    const diff = Math.round((new Date(set[i]).getTime() - new Date(set[i - 1]).getTime()) / 86400000);
+    run = diff === 1 ? run + 1 : 1;
+    if (run > best) best = run;
+  }
+  return best;
+}
+
 const makeRightActions = (theme: any, habitId: string, selectedDateStr: string, onAction: any, isFuture: boolean) => () => (
   <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', paddingRight: 10, gap: 10, width: 140, marginBottom: 12, opacity: isFuture ? 0.3 : 1 }}>
     <Pressable onPress={() => { if (isFuture) return; Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); onAction(habitId, 'rest', selectedDateStr); }} style={{ backgroundColor: theme.freeze, padding: 12, borderRadius: 12 }}><Feather name="coffee" size={18} color="#FFF" /></Pressable>
@@ -505,7 +519,6 @@ export default function HabitsScreen() {
   const [showPactDecision, setShowPactDecision] = useState(false);
   const [pactOutcomeOverride, setPactOutcomeOverride] = useState<'won' | 'lost' | null>(null);
   const [detailHabit, setDetailHabit] = useState<Habit | null>(null);
-  const [showRetired, setShowRetired] = useState(false);
   // Global settings sheet (rehomed from the Timeline — the surface that
   // survives the cut; holds end-of-week, weekly reflection, and backup).
   const [showSettings, setShowSettings] = useState(false);
@@ -528,11 +541,11 @@ export default function HabitsScreen() {
     setWhisperText(text);
     setTimeout(() => setWhisperText(null), 4000);
   }, []);
-  const [vaultTab, setVaultTab] = useState<'all' | 'archived'>('all');
+  const [vaultTab, setVaultTab] = useState<'trophies' | 'active' | 'paused'>('trophies');
 
   const [habitModalVisible, setHabitModalVisible] = useState(false);
   const vaultSheetRef = useRef<BottomSheetModal>(null);
-  const snapPoints = useMemo(() => ['90%'], []);
+  const snapPoints = useMemo(() => ['100%'], []);
   const [vaultIndex, setVaultIndex] = useState(-1);
 
   // Safe Android Back Handler
@@ -542,12 +555,11 @@ export default function HabitsScreen() {
       if (habitModalVisible) { setHabitModalVisible(false); return true; }
       if (vaultIndex >= 0) { vaultSheetRef.current?.dismiss(); return true; }
       if (detailHabit) { setDetailHabit(null); return true; }
-      if (showRetired) { setShowRetired(false); setBringBackId(null); return true; }
       return false;
     };
     const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
     return () => backHandler.remove();
-  }, [habitModalVisible, vaultIndex, detailHabit, showRetired, showSettings]);
+  }, [habitModalVisible, vaultIndex, detailHabit, showSettings]);
 
   const renderBackdrop = useCallback(
     (props: any) => <BottomSheetBackdrop {...props} disappearsOnIndex={-1} appearsOnIndex={0} opacity={0.6} />,
@@ -964,10 +976,8 @@ export default function HabitsScreen() {
   }, [scheduledHabits, selectedDateStr]);
 
   // Memoized vault list
-  const vaultItems = useMemo(
-    () => habits.filter((h: Habit) => vaultTab === 'archived' ? h.status === 'archived' : h.status === 'active'),
-    [habits, vaultTab]
-  );
+  const vaultActive = useMemo(() => habits.filter((h: Habit) => h.status === 'active'), [habits]);
+  const vaultArchived = useMemo(() => habits.filter((h: Habit) => h.status === 'archived'), [habits]);
 
   // Retired habits kept as trophies (vanished ones are excluded — they still
   // count in the grade but the user chose not to memorialize them).
@@ -1546,20 +1556,6 @@ export default function HabitsScreen() {
                 </View>
               </View>
               <View style={{ flexDirection: 'row', gap: 16, alignItems: 'center' }}>
-                {/* Retired (trophies) — kept LEFTMOST on purpose. It's the only
-                    optional icon in this cluster, so placing it left of the
-                    always-present actions means earning a trophy (or its count
-                    changing) never nudges Settings / Vault / Add out of their
-                    fixed spots. The count rides as an absolute superscript so it
-                    adds no layout width of its own. */}
-                {retiredHabits.length > 0 && (
-                  <TouchableOpacity onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setShowRetired(true); }} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
-                    <View style={{ width: 20, height: 20, alignItems: 'center', justifyContent: 'center' }}>
-                      <Feather name="award" size={20} color={theme.textMain} />
-                      <Text style={{ position: 'absolute', top: -7, right: -9, color: theme.textSub, fontSize: 10, fontWeight: '700', opacity: 0.5, fontVariant: ['tabular-nums'] }}>{retiredHabits.length}</Text>
-                    </View>
-                  </TouchableOpacity>
-                )}
                 {/* Settings — rehomed from the Timeline (now the app's only Settings entry). */}
                 <TouchableOpacity onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setShowSettings(true); }} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
                   <Feather name="settings" size={20} color={theme.textMain} />
@@ -2034,40 +2030,89 @@ export default function HabitsScreen() {
           </Modal>
 
           {/* ── GORHOM VAULT SHEET ── */}
-          <BottomSheetModal ref={vaultSheetRef} snapPoints={snapPoints} onChange={setVaultIndex} backdropComponent={renderBackdrop} backgroundStyle={{ backgroundColor: theme.bg, borderRadius: 32 }} handleIndicatorStyle={{ backgroundColor: theme.border, width: 40, height: 5 }}>
+          <BottomSheetModal ref={vaultSheetRef} snapPoints={snapPoints} enableDynamicSizing={false} index={0} topInset={insets.top} onChange={setVaultIndex} backdropComponent={renderBackdrop} backgroundStyle={{ backgroundColor: theme.bg, borderRadius: 32 }} handleIndicatorStyle={{ backgroundColor: theme.border, width: 40, height: 5 }}>
             <View style={{ paddingHorizontal: 24, paddingTop: 10, paddingBottom: 16, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
               <Text style={{ fontSize: 28, fontWeight: '900', color: theme.textMain, letterSpacing: -1 }}>Vault.</Text>
               <TouchableOpacity onPress={closeVault} hitSlop={15}><Feather name="x" size={24} color={theme.textMain} /></TouchableOpacity>
             </View>
-            <View style={{ paddingHorizontal: 24, marginBottom: 20 }}>
-              <GHScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
-                {(['all', 'archived'] as const).map(t => (
-                  <TouchableOpacity key={t} onPress={() => setVaultTab(t)} style={{ paddingVertical: 10, paddingHorizontal: 20, borderRadius: 20, backgroundColor: vaultTab === t ? theme.textMain : theme.surface, borderWidth: 1, borderColor: theme.border }}>
-                    <Text style={{ color: vaultTab === t ? theme.bg : theme.textSub, fontWeight: '800', fontSize: 13, textTransform: 'capitalize' }}>{t}</Text>
+            {/* Segmented tabs — Trophies (retired, merged in here) / Active / Paused. */}
+            <View style={{ flexDirection: 'row', gap: 6, paddingHorizontal: 24, marginBottom: 18 }}>
+              {([['trophies', 'Trophies', retiredHabits.length], ['active', 'Active', vaultActive.length], ['paused', 'Paused', vaultArchived.length]] as const).map(([key, label, count]) => {
+                const on = vaultTab === key;
+                return (
+                  <TouchableOpacity key={key} onPress={() => { setVaultTab(key); setBringBackId(null); }} style={{ flex: 1, paddingVertical: 9, borderRadius: 12, alignItems: 'center', backgroundColor: on ? theme.textMain : theme.surface, borderWidth: 1, borderColor: on ? theme.textMain : theme.border }}>
+                    <Text style={{ color: on ? theme.bg : theme.textSub, fontWeight: '800', fontSize: 13 }}>{label}</Text>
+                    <Text style={{ color: on ? theme.bg : theme.textSub, fontSize: 10, fontWeight: '700', opacity: 0.7, marginTop: 1 }}>{count}</Text>
                   </TouchableOpacity>
-                ))}
-              </GHScrollView>
+                );
+              })}
             </View>
             <BottomSheetScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 40 }} showsVerticalScrollIndicator={false}>
-              {vaultItems.length === 0 ? <View style={{ alignItems: 'center', marginTop: 40 }}><Feather name={vaultTab === 'archived' ? 'archive' : 'list'} size={40} color={theme.textSub} style={{ opacity: 0.2 }} /></View> : null}
-              {vaultItems.map((h: Habit) => (
-                <View key={h.id} style={{ backgroundColor: theme.surface, borderRadius: 16, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: theme.border, flexDirection: 'row', alignItems: 'center' }}>
-                  <TouchableOpacity style={{ flex: 1 }} onPress={() => vaultTab === 'all' ? (closeVault(), openSheet(h)) : null} disabled={vaultTab === 'archived'}>
-                    <Text style={{ color: theme.textMain, fontSize: 16, fontWeight: '800' }}>{h.title}</Text>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 }}>
-                      <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '600', textTransform: 'capitalize' }}>{h.timeBlock}</Text>
-                      {vaultTab === 'all' && <Feather name="edit-2" size={10} color={theme.textSub} />}
+              {/* TROPHIES — retired habits as medallions; long-press one to Bring back. */}
+              {vaultTab === 'trophies' && (
+                retiredHabits.length === 0
+                  ? <View style={{ alignItems: 'center', marginTop: 40 }}><Feather name="award" size={40} color={theme.textSub} style={{ opacity: 0.2 }} /></View>
+                  : <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
+                      {retiredHabits.map((h: Habit) => {
+                        const totalDays = new Set(h.history).size;
+                        const best = longestRun(h.history);
+                        return (
+                          <TouchableOpacity key={h.id} onLongPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); setBringBackId(bringBackId === h.id ? null : h.id); }} delayLongPress={400} activeOpacity={0.85} style={{ width: '47%', padding: 14, borderRadius: 16, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.border, alignItems: 'center' }}>
+                            <View style={{ width: 52, height: 52, borderRadius: 26, backgroundColor: hexToRgba(h.color, 0.15), alignItems: 'center', justifyContent: 'center', marginBottom: 10 }}><Feather name="award" size={25} color={h.color} /></View>
+                            <Text numberOfLines={1} style={{ color: theme.textMain, fontSize: 13.5, fontWeight: '800', marginBottom: 8 }}>{h.title}</Text>
+                            {bringBackId === h.id ? (
+                              <TouchableOpacity onPress={() => { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); unretireHabit(h.id, getFormatDateStr()); setBringBackId(null); }} style={{ paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, backgroundColor: theme.textMain }}>
+                                <Text style={{ color: theme.bg, fontSize: 11, fontWeight: '900' }}>Bring back</Text>
+                              </TouchableOpacity>
+                            ) : (
+                              <View style={{ flexDirection: 'row', gap: 12 }}>
+                                <View style={{ alignItems: 'center' }}><Text style={{ color: h.color, fontSize: 15, fontWeight: '900' }}>{best}</Text><Text style={{ color: theme.textSub, fontSize: 9, fontWeight: '700' }}>BEST</Text></View>
+                                <View style={{ width: 1, backgroundColor: theme.border }} />
+                                <View style={{ alignItems: 'center' }}><Text style={{ color: theme.textMain, fontSize: 15, fontWeight: '900' }}>{totalDays}</Text><Text style={{ color: theme.textSub, fontSize: 9, fontWeight: '700' }}>DAYS</Text></View>
+                              </View>
+                            )}
+                          </TouchableOpacity>
+                        );
+                      })}
                     </View>
-                  </TouchableOpacity>
-                  <View style={{ flexDirection: 'row', gap: 12 }}>
-                    {vaultTab === 'all' && <TouchableOpacity onPress={() => updateHabitStatus(h.id, 'archived')} hitSlop={15} style={{ padding: 8, backgroundColor: theme.bg, borderRadius: 8 }}><Feather name="archive" size={18} color={theme.textSub} /></TouchableOpacity>}
-                    {vaultTab === 'archived' && <TouchableOpacity onPress={() => updateHabitStatus(h.id, 'active')} hitSlop={15} style={{ padding: 8, backgroundColor: theme.bg, borderRadius: 8 }}><Feather name="refresh-ccw" size={18} color={theme.success} /></TouchableOpacity>}
-                    {/* Permanent erase only for never-completed habits — anything
-                        with real history is honored (Retire, from the detail view). */}
-                    {h.history.length === 0 && <TouchableOpacity onPress={() => setDeleteConfirmId(h.id)} hitSlop={15} style={{ padding: 8, backgroundColor: theme.bg, borderRadius: 8 }}><Feather name="trash-2" size={18} color={theme.danger} /></TouchableOpacity>}
-                  </View>
-                </View>
-              ))}
+              )}
+              {/* ACTIVE — tap to edit, archive, or delete (only if never completed). */}
+              {vaultTab === 'active' && (
+                vaultActive.length === 0
+                  ? <View style={{ alignItems: 'center', marginTop: 40 }}><Feather name="list" size={40} color={theme.textSub} style={{ opacity: 0.2 }} /></View>
+                  : vaultActive.map((h: Habit) => (
+                      <View key={h.id} style={{ backgroundColor: theme.surface, borderRadius: 16, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: theme.border, flexDirection: 'row', alignItems: 'center' }}>
+                        <TouchableOpacity style={{ flex: 1 }} onPress={() => { closeVault(); openSheet(h); }}>
+                          <Text style={{ color: theme.textMain, fontSize: 16, fontWeight: '800' }}>{h.title}</Text>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 }}>
+                            <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '600', textTransform: 'capitalize' }}>{h.timeBlock}</Text>
+                            <Feather name="edit-2" size={10} color={theme.textSub} />
+                          </View>
+                        </TouchableOpacity>
+                        <View style={{ flexDirection: 'row', gap: 12 }}>
+                          <TouchableOpacity onPress={() => updateHabitStatus(h.id, 'archived')} hitSlop={15} style={{ padding: 8, backgroundColor: theme.bg, borderRadius: 8 }}><Feather name="archive" size={18} color={theme.textSub} /></TouchableOpacity>
+                          {h.history.length === 0 && <TouchableOpacity onPress={() => setDeleteConfirmId(h.id)} hitSlop={15} style={{ padding: 8, backgroundColor: theme.bg, borderRadius: 8 }}><Feather name="trash-2" size={18} color={theme.danger} /></TouchableOpacity>}
+                        </View>
+                      </View>
+                    ))
+              )}
+              {/* PAUSED — archived; restore or delete (only if never completed). */}
+              {vaultTab === 'paused' && (
+                vaultArchived.length === 0
+                  ? <View style={{ alignItems: 'center', marginTop: 40 }}><Feather name="archive" size={40} color={theme.textSub} style={{ opacity: 0.2 }} /></View>
+                  : vaultArchived.map((h: Habit) => (
+                      <View key={h.id} style={{ backgroundColor: theme.surface, borderRadius: 16, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: theme.border, flexDirection: 'row', alignItems: 'center' }}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ color: theme.textMain, fontSize: 16, fontWeight: '800' }}>{h.title}</Text>
+                          <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '600', textTransform: 'capitalize', marginTop: 4 }}>{h.timeBlock}</Text>
+                        </View>
+                        <View style={{ flexDirection: 'row', gap: 12 }}>
+                          <TouchableOpacity onPress={() => updateHabitStatus(h.id, 'active')} hitSlop={15} style={{ padding: 8, backgroundColor: theme.bg, borderRadius: 8 }}><Feather name="refresh-ccw" size={18} color={theme.success} /></TouchableOpacity>
+                          {h.history.length === 0 && <TouchableOpacity onPress={() => setDeleteConfirmId(h.id)} hitSlop={15} style={{ padding: 8, backgroundColor: theme.bg, borderRadius: 8 }}><Feather name="trash-2" size={18} color={theme.danger} /></TouchableOpacity>}
+                        </View>
+                      </View>
+                    ))
+              )}
             </BottomSheetScrollView>
           </BottomSheetModal>
 
@@ -2455,73 +2500,6 @@ export default function HabitsScreen() {
 
           {/* ── RETIRED (trophies) SCREEN ── kept retired habits; their frozen
               strength still counts toward the grade. */}
-          {showRetired && (
-            <Animated.View entering={FadeInDown.duration(260)} style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: theme.bg, zIndex: 55 }}>
-              <SafeAreaView style={{ flex: 1 }} edges={['top']}>
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: theme.border }}>
-                  <TouchableOpacity onPress={() => { setShowRetired(false); setBringBackId(null); }} hitSlop={15} style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <Feather name="chevron-left" size={22} color={theme.textMain} />
-                    <Text style={{ color: theme.textSub, fontSize: 14, fontWeight: '700' }}>Habits</Text>
-                  </TouchableOpacity>
-                  <Text style={{ color: theme.textMain, fontSize: 16, fontWeight: '900' }}>Retired</Text>
-                  <View style={{ width: 40 }} />
-                </View>
-                <GHScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 24, paddingBottom: 80 }}>
-                  <Text style={{ color: theme.textSub, fontSize: 13, fontWeight: '600', fontStyle: 'italic', marginBottom: 20, lineHeight: 20 }}>Habits you saw through. The strength they earned still counts.</Text>
-                  {retiredHabits.length === 0 ? (
-                    <View style={{ alignItems: 'center', paddingTop: 60 }}>
-                      <Feather name="award" size={32} color={theme.textSub} style={{ opacity: 0.2, marginBottom: 14 }} />
-                      <Text style={{ color: theme.textSub, fontSize: 13, fontWeight: '700' }}>Nothing retired yet.</Text>
-                    </View>
-                  ) : retiredHabits.map((h) => {
-                    const frozen = calculateStrengthScore(h, getFormatDateStr());
-                    const fmtRetired = (() => {
-                      if (!h.retiredAt) return '';
-                      const [y, m, d] = h.retiredAt.split('-').map(Number);
-                      const date = new Date(y, m - 1, d);
-                      if (calendarType === 'shamsi') { const p = getShamsiDateParts(date); return `${p.day} ${S_MONTHS[p.month - 1].slice(0, 3)} ${p.year}`; }
-                      return `${d} ${G_MONTHS[m - 1]} ${y}`;
-                    })();
-                    const showBringBack = bringBackId === h.id;
-                    return (
-                      // Long-press ~2s reveals a hidden "bring back" button — a
-                      // quiet escape hatch, not something you trip over. A normal
-                      // tap dismisses it again.
-                      <Pressable
-                        key={h.id}
-                        onLongPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy); setBringBackId(h.id); }}
-                        delayLongPress={2000}
-                        onPress={() => { if (showBringBack) setBringBackId(null); }}
-                        style={{ backgroundColor: theme.surface, borderRadius: 16, padding: 18, marginBottom: 12, borderWidth: 1, borderColor: showBringBack ? h.color : theme.border, borderLeftWidth: 4, borderLeftColor: h.color }}
-                      >
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-                          <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: hexToRgba(h.color, 0.15), justifyContent: 'center', alignItems: 'center' }}>
-                            <Feather name={h.icon} size={20} color={h.color} />
-                          </View>
-                          <View style={{ flex: 1 }}>
-                            <Text style={{ color: theme.textMain, fontSize: 17, fontWeight: '900' }}>{h.title}</Text>
-                            <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '600', marginTop: 2 }}>Retired {fmtRetired} • {h.history.length} done</Text>
-                          </View>
-                          <Text style={{ fontSize: 20, fontWeight: '900', color: frozen >= 80 ? h.color : frozen >= 50 ? theme.textSub : theme.danger }}>{frozen}%</Text>
-                        </View>
-                        {h.description ? <Text style={{ color: theme.textSub, fontSize: 13, fontWeight: '500', lineHeight: 20, marginTop: 12 }}>{h.description}</Text> : null}
-                        {showBringBack && (
-                          <TouchableOpacity
-                            onPress={() => { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); unretireHabit(h.id, getFormatDateStr()); setBringBackId(null); }}
-                            style={{ marginTop: 14, paddingVertical: 12, borderRadius: 12, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 8, backgroundColor: hexToRgba(h.color, 0.15), borderWidth: 1, borderColor: hexToRgba(h.color, 0.4) }}
-                          >
-                            <Feather name="rotate-ccw" size={15} color={h.color} />
-                            <Text style={{ color: h.color, fontWeight: '800', fontSize: 14 }}>Bring this habit back</Text>
-                          </TouchableOpacity>
-                        )}
-                      </Pressable>
-                    );
-                  })}
-                </GHScrollView>
-              </SafeAreaView>
-            </Animated.View>
-          )}
-
           {/* ── PACT SETUP MODAL (pick a habit) ── */}
           <Modal visible={showPactSetup} transparent animationType="fade" onRequestClose={() => setShowPactSetup(false)}>
             <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' }} onPress={() => setShowPactSetup(false)}>
