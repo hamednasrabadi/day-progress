@@ -247,7 +247,7 @@ export type ChallengeCadence = 'daily' | 'cumulative' | 'oneshot';
 // A habit→challenge link. Completing the habit (to its own target for the day)
 // can auto-advance the challenge by `increment`, but only when `autoAdvance`
 // is on — the user decides per link.
-export type ChallengeLink = { habitId: string; autoAdvance: boolean; increment: number };
+export type ChallengeLink = { habitId: string; autoAdvance: boolean; increment: number; lastAdvancedDate?: string };
 
 // One progress event in a challenge's history. `source` records where the
 // log came from so the ledger can read "Logged +2" vs "Habit · +1".
@@ -1425,24 +1425,41 @@ export const useAppStore = create<AppState>()(
           // Resolve this habit's link config. Prefer the new `links` model;
           // fall back to a legacy linkedHabitIds entry (treated as the old
           // hardcoded auto-advance +1) so un-migrated data still advances.
-          const link = c.links?.find(l => l.habitId === habitId)
+          const persistedLink = c.links?.find(l => l.habitId === habitId);
+          const link = persistedLink
             ?? (c.linkedHabitIds?.includes(habitId) ? { habitId, autoAdvance: true, increment: 1 } : undefined);
           if (!link || !link.autoAdvance) return c;
           if (c.deadState !== 'active' && c.deadState !== 'resurrected') return c;
           if (c.current >= c.target) return c;
-          const existingLogs = c.logDates || [];
-          if (existingLogs.includes(dateStr)) return c;
+          // Idempotency is PER-(habit, challenge, day): each linked habit may
+          // advance this challenge once per day. This used to key off logDates
+          // (per-challenge), so the FIRST linked habit to complete each day
+          // locked out every OTHER linked habit — completing a second one did
+          // nothing ("worked once, never again"). We now stamp the date on the
+          // LINK itself, so different habits each contribute their increment,
+          // while re-completing the SAME habit the same day doesn't double-count.
+          // Legacy links (no persisted entry) keep the old per-day logDates guard.
+          const alreadyAdvanced = persistedLink
+            ? persistedLink.lastAdvancedDate === dateStr
+            : (c.logDates || []).includes(dateStr);
+          if (alreadyAdvanced) return c;
 
           touched = true;
           const inc = Math.max(1, Math.round(link.increment || 1));
           const newCurrent = Math.min(c.target, c.current + inc);
           const appliedDelta = newCurrent - c.current;
           const isAchieved = newCurrent >= c.target && c.deadState === 'active';
+          const existingLogs = c.logDates || [];
           return {
             ...c,
             current: newCurrent,
             lastLoggedAt: Date.now(),
-            logDates: [...existingLogs, dateStr],
+            // logDates stays a de-duped, date-only record (drives the activity
+            // ring); the per-habit idempotency now lives on the link.
+            logDates: existingLogs.includes(dateStr) ? existingLogs : [...existingLogs, dateStr],
+            links: persistedLink
+              ? (c.links || []).map(l => l.habitId === habitId ? { ...l, lastAdvancedDate: dateStr } : l)
+              : c.links,
             ledger: [...(c.ledger || []), makeLedgerEntry(appliedDelta, 'habit')],
             ...(isAchieved ? { deadState: 'achieved' as DeadState, achievedAt: Date.now() } : {}),
           };
