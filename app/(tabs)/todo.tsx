@@ -628,7 +628,6 @@ export default function TodoScreen() {
 
   // Modal States
   const [editingTask, setEditingTask] = useState<Task | null>(null);
-  const [forcedProjectId, setForcedProjectId] = useState<string | null>(null);
   const [activeProjectFolderId, setActiveProjectFolderId] = useState<string | null>(null);
   const [vaultTab, setVaultTab] = useState<'trash' | 'archived' | 'projects'>('trash');
   // Tap-to-expand for archived project folders — without this, tasks inside
@@ -1186,7 +1185,11 @@ export default function TodoScreen() {
     fireReclaimWhisper();
   }, [addOrUpdateProject, setTasks, fireReclaimWhisper]);
 
-  const openTaskSheet = useCallback((task?: Task) => {
+  // projectForNew pre-selects a project for a NEW task. It's passed explicitly
+  // (not read from state) because callers set it and open the sheet in the same
+  // tick — a state value would still be stale in this closure. null/undefined =
+  // Inbox. Ignored when editing (the task's own projectId wins).
+  const openTaskSheet = useCallback((task?: Task, projectForNew?: string | null) => {
     Keyboard.dismiss(); setErr('');
     setScheduleNotice(null);
     if (task) {
@@ -1196,13 +1199,13 @@ export default function TodoScreen() {
       setRecurType(task.recurType || 'none'); setRecurDays(task.recurDays || []); setRecurDayOfMonth(task.recurDayOfMonth); setSubTasks(task.subTasks || []);
       setPromised(!!task.promised);
     } else {
-      setEditingTask(null); setTxt(''); setNotes(''); setColor(COLORS[0]); setPriority('Medium'); setProjectId(forcedProjectId || undefined);
+      setEditingTask(null); setTxt(''); setNotes(''); setColor(COLORS[0]); setPriority('Medium'); setProjectId(projectForNew ?? undefined);
       setStartDate(''); setDeadlineDate(''); setDeadlineTime(''); setCalOpen(false); setDateTab('due'); setHasReminder(false); setReminderTime(''); setReminderOffsetDays(0);
       setRecurType('none'); setRecurDays([]); setRecurDayOfMonth(undefined); setSubTasks([]); setNewSubTxt('');
       setPromised(false);
     }
     setTaskModalVisible(true);
-  }, [forcedProjectId]);
+  }, []);
 
   // Promote an inbox task into "today" by stamping startDate = today. We use
   // startDate (not deadlineDate) deliberately — the user is choosing to work on
@@ -1749,7 +1752,6 @@ export default function TodoScreen() {
           <TouchableOpacity
             onPress={() => {
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              setForcedProjectId(null);
               openTaskSheet();
             }}
             activeOpacity={0.85}
@@ -1894,7 +1896,7 @@ export default function TodoScreen() {
     );
     if (item.type === 'project_comp_header') return <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 2, marginBottom: 8, marginLeft: 20, marginTop: 12 }}>COMPLETED</Text>;
     if (item.type === 'project_add_btn') return (
-      <TouchableOpacity onPress={() => { setForcedProjectId(item.project.id); openTaskSheet(); }} style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, padding: 14, borderRadius: 12, borderWidth: 1, borderColor: theme.border, borderStyle: 'dashed', marginTop: 8, marginHorizontal: 16, marginBottom: 16 }}>
+      <TouchableOpacity onPress={() => { openTaskSheet(undefined, item.project.id); }} style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, padding: 14, borderRadius: 12, borderWidth: 1, borderColor: theme.border, borderStyle: 'dashed', marginTop: 8, marginHorizontal: 16, marginBottom: 16 }}>
         <Feather name="plus" size={16} color={theme.textSub} /><Text style={{ color: theme.textSub, fontSize: 13, fontWeight: '800' }}>Add Task to {item.project.name}</Text>
       </TouchableOpacity>
     );
@@ -2008,7 +2010,7 @@ export default function TodoScreen() {
                 <TouchableOpacity onPress={() => vaultSheetRef.current?.present()} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
                   <Feather name="archive" size={20} color={theme.textMain} />
                 </TouchableOpacity>
-                <TouchableOpacity onPress={() => { setForcedProjectId(null); openTaskSheet(); }} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
+                <TouchableOpacity onPress={() => { openTaskSheet(); }} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
                   <Feather name="plus-circle" size={22} color={theme.textMain} />
                 </TouchableOpacity>
               </View>
@@ -2692,7 +2694,7 @@ export default function TodoScreen() {
                       {/* ── ADD TASK TO FOLDER — inline dashed button, layer-on-layer over folder sheet ── */}
                       {!isComplete ? (
                         <TouchableOpacity
-                          onPress={() => { setForcedProjectId(p.id); openTaskSheet(); }}
+                          onPress={() => { openTaskSheet(undefined, p.id); }}
                           style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, padding: 14, borderRadius: 12, borderWidth: 1, borderColor: theme.border, borderStyle: 'dashed', marginTop: 4, marginBottom: 4 }}
                         >
                           <Feather name="plus" size={14} color={theme.textSub} />
