@@ -360,8 +360,14 @@ const HabitCard = React.memo(function HabitCard({ habit, selectedDateStr, todayC
   const handleToggle = useCallback(() => {
     if (isFutureDateRef.current) { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error); return; }
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Rigid);
-    onToggle(habit.id, selectedDateStr);
-  }, [habit.id, selectedDateStr, onToggle]);
+    // Tap the checkbox to toggle done↔pending. This MUST go through the 3-arg
+    // action handler: `onToggle` is wired to handleHabitAction(id, action, date),
+    // so the old onToggle(id, date) put the DATE into `action` — the tap did
+    // nothing AND linked challenges never advanced (the advance only fires on
+    // action === 'done'). Routing through onAction with the real action makes a
+    // checkbox completion advance its linked challenges, same as hold-to-sweep.
+    onAction(habitIdRef.current, statusRef.current === 'done' ? 'pending' : 'done', selectedDateRef.current);
+  }, [onAction]);
 
   const handleArchive = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -545,6 +551,9 @@ export default function HabitsScreen() {
 
   const [habitModalVisible, setHabitModalVisible] = useState(false);
   const vaultSheetRef = useRef<BottomSheetModal>(null);
+  // Close the vault when leaving this tab — a sheet shouldn't linger open across
+  // a tab switch. useFocusEffect's cleanup runs on blur.
+  useFocusEffect(useCallback(() => () => vaultSheetRef.current?.dismiss(), []));
   const snapPoints = useMemo(() => ['100%'], []);
   const [vaultIndex, setVaultIndex] = useState(-1);
 
