@@ -194,13 +194,8 @@ export default function RootLayout() {
   }), [daysSinceInstall, totalTasksCreated, activeTaskCount, totalBlocksCreated, dayRatingsCount, activeDaysWithBlock, totalNotesCreated, diaryEntriesCreated, sealingUnlocked, totalChallengesCreated, activeChallengesCount, totalHabitsCreated, maxSingleHabitCompletions, dayConqueredEver]);
   useUnlockTriggers(unlockSnapshot);
 
-  // Stamp the moment the Challenges tab first appears (day 2) so its teaser can
-  // run a literal 24h countdown from that instant to the day-3 conditions reveal.
-  useEffect(() => {
-    if (daysSinceInstall >= 2 && !useAppStore.getState().challengesTeaserSeenAt) {
-      useAppStore.getState().setChallengesTeaserSeenAt(Date.now());
-    }
-  }, [daysSinceInstall]);
+  // (The Challenges reveal is now anchored to installDate directly — see the gate
+  // in app/(tabs)/challenges.tsx — so there's no first-appearance stamp to set.)
 
   useEffect(() => {
     // Create Android channels for habits / tasks / time-capsule reminders. All

@@ -1338,12 +1338,22 @@ const LockGate = ({ onUnlock, theme }: { onUnlock: () => void; theme: any }) => 
 // Day-2 teaser, pared down to ONE thing: a bare 24h countdown ticking down to
 // the reveal. No title, no shimmer, no copy — just the timer. (revealAt =
 // first-seen + 24h, stamped in app/_layout; null only in the beat before that.)
-const ChallengeTeaser = ({ theme, revealAt }: { theme: any; revealAt: number | null }) => {
+const ChallengeTeaser = ({ theme, revealAt, onReveal }: { theme: any; revealAt: number | null; onReveal?: () => void }) => {
   const [now, setNow] = useState(() => Date.now());
+  const firedRef = useRef(false);
   useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 1000);
+    const t = setInterval(() => {
+      const n = Date.now();
+      setNow(n);
+      // The instant we cross the boundary, tell the parent to reveal — so the
+      // countdown transitions live instead of freezing at 00:00:00.
+      if (revealAt != null && n >= revealAt && !firedRef.current) {
+        firedRef.current = true;
+        onReveal?.();
+      }
+    }, 1000);
     return () => clearInterval(t);
-  }, []);
+  }, [revealAt, onReveal]);
   const msLeft = revealAt != null ? Math.max(0, revealAt - now) : null;
   const pad = (n: number) => String(n).padStart(2, '0');
   const text = msLeft == null ? '--:--:--'
@@ -2770,7 +2780,30 @@ export default function ChallengesScreen() {
   // criteria LockGate below. markDotSeen clears the tab-icon dot once the user
   // opens the tab.
   const daysSinceInstall = useDaysSinceInstall();
-  const challengesTeaserSeenAt = useAppStore(s => s.challengesTeaserSeenAt);
+  // Reveal is anchored to INSTALL, not to when the user first opens the tab: the
+  // teaser runs day 2→3 and the conditions appear at the day-3 boundary (install
+  // + 3 days), so someone who returns days later finds it already revealed instead
+  // of a fresh 24h wait. revealReached flips live (via the teaser's onReveal) so
+  // the countdown never just sits at 00:00:00 needing a tab reopen.
+  const installDate = useAppStore(s => s.installDate);
+  // Optional explicit reveal timestamp — set ONLY by the Lab → Dev "Preview
+  // reveal (8s)" button so the countdown + reveal animation can be tested without
+  // waiting days. null in normal use, so the reveal falls back to the
+  // install-anchored day-3 boundary below.
+  const revealOverride = useAppStore(s => s.challengesTeaserSeenAt);
+  const revealAt = useMemo(() => {
+    if (revealOverride != null) return revealOverride;
+    if (!installDate) return null;
+    const [iy, im, idy] = installDate.split('-').map(Number);
+    return new Date(iy, im - 1, idy + 3).getTime(); // local midnight of install + 3 days
+  }, [installDate, revealOverride]);
+  const [revealReached, setRevealReached] = useState(() => revealAt != null && Date.now() >= revealAt);
+  useEffect(() => {
+    // Resync whenever revealAt changes (install load, or the dev override) so a
+    // freshly-set future revealAt drops us back to the teaser. The live crossing
+    // while the user is watching is handled by ChallengeTeaser.onReveal.
+    if (revealAt != null) setRevealReached(Date.now() >= revealAt);
+  }, [revealAt]);
   const markDotSeen = useAppStore(s => s.markDotSeen);
   const milestonesUnlocked = useIsUnlocked(FEATURE_IDS.MILESTONES);
   const linkedHabitsUnlocked = useIsUnlocked(FEATURE_IDS.LINKED_HABITS);
@@ -3392,13 +3425,20 @@ export default function ChallengesScreen() {
   // good. "Show me everything" users skip the whole arc via allFeaturesUnlocked.
   if (!allFeaturesUnlocked && !challengesUnlocked) {
     if (daysSinceInstall < 2) return <Redirect href={'/(tabs)' as any} />;
-    const revealAt = challengesTeaserSeenAt != null ? challengesTeaserSeenAt + 86_400_000 : null;
-    if (revealAt == null || Date.now() < revealAt) {
-      return <ChallengeTeaser theme={theme} revealAt={revealAt} />;
+    if (!revealReached) {
+      // onReveal fires the instant the countdown hits zero, so we flip to the
+      // conditions live — never sitting at 00:00:00, never needing a tab reopen.
+      return <ChallengeTeaser theme={theme} revealAt={revealAt} onReveal={() => setRevealReached(true)} />;
     }
-    // The redesigned LockScreen owns the unlock moment (haptic + burst + ring
-    // pulse), then calls this ~1s later — so onUnlock is just the gate flip.
-    return <LockGate onUnlock={() => setChallengesUnlocked(true)} theme={theme} />;
+    // Fade the gate in so the reveal animates instead of hard-cutting — the
+    // LockScreen's own ring sweep + staggered rows then play as the reveal.
+    // The redesigned LockScreen owns the final unlock moment (haptic + burst +
+    // ring pulse), then calls onUnlock ~1s later — so that's just the gate flip.
+    return (
+      <Reanimated.View style={{ flex: 1 }} entering={FadeIn.duration(450)}>
+        <LockGate onUnlock={() => setChallengesUnlocked(true)} theme={theme} />
+      </Reanimated.View>
+    );
   }
 
   return (
