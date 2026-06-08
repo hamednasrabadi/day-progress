@@ -12,7 +12,7 @@ import * as Haptics from 'expo-haptics';
 import { BlurView } from 'expo-blur';
 import { Feather } from '@expo/vector-icons';
 import { GestureHandlerRootView, Swipeable, ScrollView as GHScrollView } from 'react-native-gesture-handler';
-import Animated, { FadeInDown, FadeIn, FadeOut, Easing, useAnimatedStyle, withSpring, useSharedValue, withTiming, runOnJS, cancelAnimation, withSequence, LinearTransition, withDelay, interpolate, Extrapolation } from 'react-native-reanimated';
+import Animated, { FadeInDown, FadeIn, FadeOut, Easing, useAnimatedStyle, withSpring, useSharedValue, withTiming, runOnJS, cancelAnimation, withSequence, withDelay, interpolate, Extrapolation } from 'react-native-reanimated';
 
 import { useFocusEffect } from 'expo-router';
 import { FlashList } from '@shopify/flash-list';
@@ -386,8 +386,11 @@ const HabitCard = React.memo(function HabitCard({ habit, selectedDateStr, todayC
   const renderRight = useMemo(() => makeRightActions(theme, habit.id, selectedDateStr, onAction, isFuture), [theme, habit.id, selectedDateStr, onAction, isFuture]);
 
   return (
-    <Animated.View layout={LinearTransition.springify().damping(22).stiffness(250)}>
-      <Swipeable 
+    // No layout-spring here: this is a recycled FlashList row, and Reanimated
+    // layout animations re-fire on every recycle/reposition as you scroll —
+    // that's the "rows springing up and down" jank. FlashList owns positioning.
+    <Animated.View>
+      <Swipeable
         renderLeftActions={renderLeft}
         renderRightActions={renderRight}
         onSwipeableOpen={(direction) => { if (direction === 'left') handleArchive(); }}
@@ -1850,8 +1853,12 @@ export default function HabitsScreen() {
 
           {/* ── STRENGTH HISTORY MODAL ── */}
           <Modal visible={showStrengthHistory} transparent animationType="fade" onRequestClose={() => setShowStrengthHistory(false)}>
-            <Pressable onPress={() => setShowStrengthHistory(false)} style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' }}>
-              <Pressable onPress={() => {}} style={{ backgroundColor: theme.surface, borderTopLeftRadius: 32, borderTopRightRadius: 32, paddingTop: 28, paddingBottom: 48, paddingHorizontal: 28, minHeight: '62%' }}>
+            <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' }}>
+              {/* Backdrop is a sibling BEHIND the sheet: tapping outside closes, but
+                  taps on the sheet don't reach it — so the sheet can be a plain View
+                  instead of a Pressable, which was swallowing the list's scroll. */}
+              <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowStrengthHistory(false)} />
+              <View style={{ backgroundColor: theme.surface, borderTopLeftRadius: 32, borderTopRightRadius: 32, paddingTop: 28, paddingBottom: 48, paddingHorizontal: 28, minHeight: '62%', maxHeight: '88%' }}>
                 {(() => {
                   // Mirror calculateGlobalStrength: active (live scores) + kept
                   // retired (frozen) count toward the grade; vanished retired and
@@ -1932,7 +1939,11 @@ export default function HabitsScreen() {
                                 <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '800', letterSpacing: 0.3 }}>{strengthSortAsc ? 'Lowest first' : 'Highest first'}</Text>
                               </TouchableOpacity>
                             </View>
-                            <View style={{ gap: 10 }}>
+                            {/* Only the habit list scrolls — score + sparkline above stay
+                                fixed. flexShrink lets it shrink to fit inside the sheet's
+                                bounded (maxHeight) height, giving it a definite frame to
+                                scroll within instead of overflowing off-screen. */}
+                            <ScrollView style={{ flexShrink: 1 }} showsVerticalScrollIndicator nestedScrollEnabled contentContainerStyle={{ gap: 10 }}>
                               {scoredHabits.map(({ h, s }) => {
                                 const c = s >= 80 ? h.color : s >= 50 ? theme.textSub : theme.danger;
                                 return (
@@ -1963,15 +1974,15 @@ export default function HabitsScreen() {
                                   </View>
                                 );
                               })()}
-                            </View>
+                            </ScrollView>
                           </>
                         );
                       })()}
                     </>
                   );
                 })()}
-              </Pressable>
-            </Pressable>
+              </View>
+            </View>
           </Modal>
 
           {/* ── NOTE DELETE CONFIRMATION ── */}
