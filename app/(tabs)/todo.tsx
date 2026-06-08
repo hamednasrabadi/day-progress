@@ -170,8 +170,10 @@ const sortTasks = (taskList: Task[]) => {
 
 // ─── THEME ───
 type Theme = { bg: string; surface: string; border: string; textMain: string; textSub: string; danger: string; warning: string; success: string; accent: string; };
-function getTheme(mode: 'light' | 'dark' | 'blue'): Theme {
+function getTheme(mode: 'light' | 'dark' | 'blue' | 'sovereign'): Theme {
   switch (mode) {
+    case 'sovereign':
+      return { bg:'#120A22', surface:'#1E1538', border:'#342856', textMain:'#EAE5F5', textSub:'#988BBC', danger:'#F43F5E', warning:'#F59E0B', success:'#10B981', accent:'#A855F7' };
     case 'blue':
       return { bg:'#0B1A2B', surface:'#122A40', border:'#1E3A52', textMain:'#E8F0F8', textSub:'#7FA0BC', danger:'#F43F5E', warning:'#F59E0B', success:'#10B981', accent:'#82AAFF' };
     case 'dark':
@@ -571,10 +573,10 @@ export default function TodoScreen() {
 
 
   const [taskModalVisible, setTaskModalVisible] = useState(false);
-  const vaultSheetRef = useRef<BottomSheetModal>(null);
-  // Close the vault when leaving this tab — a sheet shouldn't linger open across
+  const storageSheetRef = useRef<BottomSheetModal>(null);
+  // Close the storage when leaving this tab — a sheet shouldn't linger open across
   // a tab switch. useFocusEffect's cleanup runs on blur.
-  useFocusEffect(useCallback(() => () => vaultSheetRef.current?.dismiss(), []));
+  useFocusEffect(useCallback(() => () => storageSheetRef.current?.dismiss(), []));
   const projectFolderSheetRef = useRef<BottomSheetModal>(null);
   const projectModalRef = useRef<BottomSheetModal>(null);
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
@@ -592,7 +594,7 @@ export default function TodoScreen() {
       if (taskModalVisible) { setTaskModalVisible(false); return true; }
       if (sheetIndex >= 0) {
         projectModalRef.current?.dismiss();
-        vaultSheetRef.current?.dismiss();
+        storageSheetRef.current?.dismiss();
         projectFolderSheetRef.current?.dismiss();
         return true;
       }
@@ -633,7 +635,7 @@ export default function TodoScreen() {
   // Modal States
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const [activeProjectFolderId, setActiveProjectFolderId] = useState<string | null>(null);
-  const [vaultTab, setVaultTab] = useState<'trash' | 'archived' | 'projects'>('trash');
+  const [storageTab, setStorageTab] = useState<'trash' | 'archived' | 'projects'>('trash');
   // Tap-to-expand for archived project folders — without this, tasks inside
   // an archived project are completely inaccessible (filtered out of the
   // main feed by archivedProjectIds, not surfaced in the Archived tab
@@ -1127,7 +1129,7 @@ export default function TodoScreen() {
   // Applies the delete. With the toggle off, tasks inside the project lose
   // their projectId and re-emerge in the Inbox (current default behavior).
   // With the toggle on, those same tasks are moved to status='trash' — that
-  // way the user keeps recovery via the trash vault instead of vaporising
+  // way the user keeps recovery via the trash storage instead of vaporising
   // potentially weeks of work. Notifications on those tasks are cancelled
   // either way to keep the scheduler clean.
   const confirmDeleteProject = useCallback(() => {
@@ -1595,7 +1597,7 @@ export default function TodoScreen() {
     return [...seeds, ...rest];
   }, [rawActiveInbox, seedTaskIds]);
 
-  // Memoized vault lists — never computed inline in JSX
+  // Memoized storage lists — never computed inline in JSX
   const trashTasks = useMemo(() => tasks.filter(t => t.status === 'trash'), [tasks]);
 
   // Bulk-purge everything in the trash. Mirrors the per-item "Purge Forever"
@@ -1798,7 +1800,7 @@ export default function TodoScreen() {
   const renderFlashListItem = useCallback(({ item }: any) => {
     if (item.type === 'empty_art') {
       // Richer empty state than the EmptyArt utility — that one is right for
-      // vault sub-tabs (trash / archive / projects), where the user is
+      // storage sub-tabs (trash / archive / projects), where the user is
       // expected to find an empty list and move on. The main tab being empty
       // is a moment that deserves more weight: typography hierarchy (title +
       // body), a real CTA, and an icon with enough presence to read against
@@ -2085,7 +2087,7 @@ export default function TodoScreen() {
                     <Feather name="folder-plus" size={20} color={theme.textMain} />
                   </TouchableOpacity>
                 ) : null}
-                <TouchableOpacity onPress={() => vaultSheetRef.current?.present()} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
+                <TouchableOpacity onPress={() => storageSheetRef.current?.present()} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
                   <Feather name="archive" size={20} color={theme.textMain} />
                 </TouchableOpacity>
                 <TouchableOpacity onPress={() => { openTaskSheet(); }} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
@@ -2546,42 +2548,42 @@ export default function TodoScreen() {
               </View>
             </Modal>
 
-            {/* VAULT SHEET */}
-            <BottomSheetModal ref={vaultSheetRef} snapPoints={['100%']} enableDynamicSizing={false} index={0} topInset={insets.top} onChange={setSheetIndex} backdropComponent={renderBackdrop} backgroundStyle={{ backgroundColor: theme.bg, borderRadius: 32 }} handleIndicatorStyle={{ backgroundColor: theme.border, width: 40, height: 5 }}>
+            {/* STORAGE SHEET */}
+            <BottomSheetModal ref={storageSheetRef} snapPoints={['100%']} enableDynamicSizing={false} index={0} topInset={insets.top} onChange={setSheetIndex} backdropComponent={renderBackdrop} backgroundStyle={{ backgroundColor: theme.bg, borderRadius: 32 }} handleIndicatorStyle={{ backgroundColor: theme.border, width: 40, height: 5 }}>
               <View style={{ paddingHorizontal: 24, paddingTop: 10, paddingBottom: 16, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Text style={{ fontSize: 28, fontWeight: '900', color: theme.textMain, letterSpacing: -1 }}>Vault.</Text>
+                <Text style={{ fontSize: 28, fontWeight: '900', color: theme.textMain, letterSpacing: -1 }}>Storage.</Text>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 18 }}>
-                  {vaultTab === 'trash' && trashTasks.length > 0 && (
+                  {storageTab === 'trash' && trashTasks.length > 0 && (
                     <TouchableOpacity onPress={purgeAllTrash} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}><Text style={{ color: theme.danger, fontWeight: '800', fontSize: 14 }}>Purge all</Text></TouchableOpacity>
                   )}
-                  <TouchableOpacity onPress={() => vaultSheetRef.current?.dismiss()} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}><Feather name="x" size={24} color={theme.textMain} /></TouchableOpacity>
+                  <TouchableOpacity onPress={() => storageSheetRef.current?.dismiss()} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}><Feather name="x" size={24} color={theme.textMain} /></TouchableOpacity>
                 </View>
               </View>
               <View style={{ paddingHorizontal: 24, marginBottom: 20 }}>
                 <GHScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
                   {(['trash', 'archived', 'projects'] as const).map(t => (
-                    <TouchableOpacity key={t} onPress={() => setVaultTab(t)} style={{ paddingVertical: 10, paddingHorizontal: 16, borderRadius: 20, backgroundColor: vaultTab === t ? theme.textMain : theme.surface, borderWidth: 1, borderColor: theme.border }}>
-                      <Text style={{ color: vaultTab === t ? theme.bg : theme.textSub, fontWeight: '800', fontSize: 13, textTransform: 'capitalize' }}>{t}</Text>
+                    <TouchableOpacity key={t} onPress={() => setStorageTab(t)} style={{ paddingVertical: 10, paddingHorizontal: 16, borderRadius: 20, backgroundColor: storageTab === t ? theme.textMain : theme.surface, borderWidth: 1, borderColor: theme.border }}>
+                      <Text style={{ color: storageTab === t ? theme.bg : theme.textSub, fontWeight: '800', fontSize: 13, textTransform: 'capitalize' }}>{t}</Text>
                     </TouchableOpacity>
                   ))}
                 </GHScrollView>
               </View>
               <BottomSheetScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 40 }} showsVerticalScrollIndicator={false}>
-                {vaultTab === 'trash' && trashTasks.length === 0 ? <EmptyArt icon="trash" message="Trash is empty. Your deleted tasks will appear here." theme={theme} /> : null}
-                {vaultTab === 'archived' && archivedTasks.length === 0 ? <EmptyArt icon="archive" message="Archive is empty. Tasks you tuck away for later will live here." theme={theme} /> : null}
-                {vaultTab === 'projects' && archivedProjects.length === 0 ? <EmptyArt icon="folder" message="No archived projects yet. Completed ones will rest here." theme={theme} /> : null}
+                {storageTab === 'trash' && trashTasks.length === 0 ? <EmptyArt icon="trash" message="Trash is empty. Your deleted tasks will appear here." theme={theme} /> : null}
+                {storageTab === 'archived' && archivedTasks.length === 0 ? <EmptyArt icon="archive" message="Archive is empty. Tasks you tuck away for later will live here." theme={theme} /> : null}
+                {storageTab === 'projects' && archivedProjects.length === 0 ? <EmptyArt icon="folder" message="No archived projects yet. Completed ones will rest here." theme={theme} /> : null}
 
-                {(vaultTab === 'trash' ? trashTasks : vaultTab === 'archived' ? archivedTasks : []).map((t: Task) => (
+                {(storageTab === 'trash' ? trashTasks : storageTab === 'archived' ? archivedTasks : []).map((t: Task) => (
                   <View key={t.id} style={{ backgroundColor: theme.surface, borderRadius: 16, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: theme.border, flexDirection: 'row', alignItems: 'center' }}>
                     <View style={{ flex: 1 }}><Text style={[{ color: theme.textSub, fontSize: 15, fontWeight: '700', textDecorationLine: t.completed ? 'line-through' : 'none' }, rtlTextStyle(t.text)]}>{t.text}</Text></View>
                     <View style={{ flexDirection: 'row', gap: 12 }}>
                       <TouchableOpacity onPress={() => setTasks(useAppStore.getState().tasks.map(x => x.id === t.id ? { ...x, status: undefined } : x))} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }} style={{ padding: 8, backgroundColor: theme.bg, borderRadius: 8 }}><Feather name="refresh-ccw" size={16} color={theme.success} /></TouchableOpacity>
-                      <TouchableOpacity onPress={() => setConfirmDialog({ visible: true, title: vaultTab === 'archived' ? 'Delete Archived Task' : 'Purge Task', message: "Are you sure? This cannot be undone.", destructiveLabel: "Purge Forever", onConfirm: () => { setTasks(useAppStore.getState().tasks.filter(x => x.id !== t.id)); setConfirmDialog(null); } })} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }} style={{ padding: 8, backgroundColor: theme.bg, borderRadius: 8 }}><Feather name="x" size={16} color={theme.danger} /></TouchableOpacity>
+                      <TouchableOpacity onPress={() => setConfirmDialog({ visible: true, title: storageTab === 'archived' ? 'Delete Archived Task' : 'Purge Task', message: "Are you sure? This cannot be undone.", destructiveLabel: "Purge Forever", onConfirm: () => { setTasks(useAppStore.getState().tasks.filter(x => x.id !== t.id)); setConfirmDialog(null); } })} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }} style={{ padding: 8, backgroundColor: theme.bg, borderRadius: 8 }}><Feather name="x" size={16} color={theme.danger} /></TouchableOpacity>
                     </View>
                   </View>
                 ))}
 
-                {vaultTab === 'projects' && (() => {
+                {storageTab === 'projects' && (() => {
                   // Partition archived folders by completion. Pending first (actionable — user might revive),
                   // Completed second (trophies). Section labels only when BOTH groups exist.
                   const entries = archivedProjects.map((p: Project) => {
@@ -2794,7 +2796,7 @@ export default function TodoScreen() {
                         </View>
                       ) : null}
 
-                      {/* ── FOLDER ACTIONS ── Archive keeps folder + tasks (restorable from vault). Delete returns tasks to Inbox. */}
+                      {/* ── FOLDER ACTIONS ── Archive keeps folder + tasks (restorable from storage). Delete returns tasks to Inbox. */}
                       <View style={{ marginTop: 32, paddingTop: 20, borderTopWidth: 1, borderTopColor: theme.border, flexDirection: 'row', gap: 10 }}>
                         <TouchableOpacity onPress={() => { handleArchiveProject(p.id); projectFolderSheetRef.current?.dismiss(); }} style={{ flex: 1, paddingVertical: 13, borderRadius: 12, borderWidth: 1, borderColor: theme.border, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 8 }}>
                           <Feather name="archive" size={14} color={theme.textSub} />
@@ -3398,7 +3400,7 @@ export default function TodoScreen() {
                     <Text style={{ color: theme.textSub, fontSize: 13, lineHeight: 20, marginBottom: 18 }}>
                       {deleteProjectAlsoTasks
                         ? (taskCount > 0
-                            ? `${taskCount} task${taskCount === 1 ? '' : 's'} inside will be moved to trash. Recoverable from the vault until you empty it.`
+                            ? `${taskCount} task${taskCount === 1 ? '' : 's'} inside will be moved to trash. Recoverable from the storage until you empty it.`
                             : 'No tasks inside — the project record alone will be removed.')
                         : (taskCount > 0
                             ? `${taskCount} task${taskCount === 1 ? '' : 's'} inside will move to your Inbox so nothing's lost.`

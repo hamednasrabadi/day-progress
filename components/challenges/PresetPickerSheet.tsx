@@ -115,7 +115,7 @@ export const PresetPickerSheet = forwardRef<BottomSheetModal, Props>(({ theme, t
       onDismiss={() => setExpandedId(null)}
     >
       {/* Sheet title — single line, matching the visual register of
-          Vault and other sheet headers across the app (28pt, 900,
+          Storage and other sheet headers across the app (28pt, 900,
           letterSpacing -1, period suffix). */}
       <View style={{ paddingHorizontal: 24, paddingTop: 8, paddingBottom: 16 }}>
         <Text style={{ fontSize: 28, fontWeight: '900', color: theme.textMain, letterSpacing: -1 }}>

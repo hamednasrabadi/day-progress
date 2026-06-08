@@ -22,13 +22,17 @@ export type Theme = {
 // Three app themes: a calm light, a softened "graphite" dark (the old pure-black
 // #000 read as too harsh), and a VSCode-ish deep-navy "blue". blue counts as a
 // dark theme (isDark: true) so status bars and every isDark branch behave.
-export type ThemeMode = 'light' | 'dark' | 'blue';
+export type ThemeMode = 'light' | 'dark' | 'blue' | 'sovereign';
 
 export function getTheme(mode: ThemeMode | boolean): Theme {
   // Tolerate the legacy boolean (true→dark, false→light) so any caller that
   // hasn't moved to themeMode yet keeps working during the migration.
   const m: ThemeMode = mode === true ? 'dark' : mode === false ? 'light' : mode;
   switch (m) {
+    case 'sovereign':
+      // Hidden easter-egg theme — obsidian + amethyst. Only awakened by going far
+      // beyond the Challenges unlock conditions; not selectable in Settings until then.
+      return { bg: '#120A22', surface: '#1E1538', border: '#342856', textMain: '#EAE5F5', textSub: '#988BBC', danger: '#F43F5E', success: '#10B981', freeze: '#F59E0B', isDark: true };
     case 'blue':
       return { bg: '#0B1A2B', surface: '#122A40', border: '#1E3A52', textMain: '#E8F0F8', textSub: '#7FA0BC', danger: '#F43F5E', success: '#10B981', freeze: '#F59E0B', isDark: true };
     case 'dark':

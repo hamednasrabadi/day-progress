@@ -41,6 +41,7 @@ export function SettingsSheet({
   // it now surfaces in the Habits tab content during its end-of-week window.)
   const themeMode         = useAppStore(s => s.themeMode);
   const setThemeMode      = useAppStore(s => s.setThemeMode);
+  const sovereignAwakened = useAppStore(s => s.sovereignAwakened);
   const endOfWeekDay      = useAppStore(s => s.endOfWeekDay);
   const setEndOfWeekDay   = useAppStore(s => s.setEndOfWeekDay);
 
@@ -99,7 +100,8 @@ export function SettingsSheet({
                 { key: 'light', label: 'Light', icon: 'sun' },
                 { key: 'dark',  label: 'Dark',  icon: 'moon' },
                 { key: 'blue',  label: 'Navy',  icon: 'droplet' },
-              ] as const).map(opt => {
+                { key: 'sovereign', label: 'Sovereign', icon: 'hexagon' },
+              ] as const).filter(opt => opt.key !== 'sovereign' || sovereignAwakened).map(opt => {
                 const active = themeMode === opt.key;
                 return (
                   <TouchableOpacity

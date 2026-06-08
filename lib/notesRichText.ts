@@ -33,7 +33,7 @@ export function resolveHighlightColor(name?: string): string {
 
 /**
  * Strip inline-markdown markers, leaving the visible text only. Used for
- * preview surfaces (note cards, search hits, vault rows) where rendering
+ * preview surfaces (note cards, search hits, storage rows) where rendering
  * styled spans inside truncated text doesn't pay off — `**bold**` reading as
  * literal asterisks in the preview is worse than just showing "bold" plain.
  *

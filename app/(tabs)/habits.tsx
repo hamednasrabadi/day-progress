@@ -252,7 +252,7 @@ const makeLeftActions = (theme: any) => (p: any, d: RNAnimated.AnimatedInterpola
 
 // eslint-disable-next-line react/display-name -- Swipeable render callback, not a component
 // Longest consecutive-day run in a habit's completion history — the "best streak"
-// stat shown on vault trophy medallions.
+// stat shown on storage trophy medallions.
 function longestRun(dates: string[] = []): number {
   if (!dates.length) return 0;
   const set = [...new Set(dates)].sort();
@@ -485,7 +485,7 @@ export default function HabitsScreen() {
   // ── Progressive unlock gates ──
   // pact (3 habits) → entry point; completion notes (5 single-habit
   // completions) → per-completion note field; strength score (first day
-  // conquered) → the % chips + summary display. The vault/archive is NOT
+  // conquered) → the % chips + summary display. The storage/archive is NOT
   // gated — it ships available from day one.
   const pactUnlocked = useIsUnlocked(FEATURE_IDS.PACT);
   const completionNotesUnlocked = useIsUnlocked(FEATURE_IDS.COMPLETION_NOTES);
@@ -502,6 +502,7 @@ export default function HabitsScreen() {
 
   // Strength history modal
   const [showStrengthHistory, setShowStrengthHistory] = useState(false);
+  const sovereignAwakened = useAppStore(s => s.sovereignAwakened);
   // Sort order for the per-habit breakdown. Default ascending = weakest first,
   // so underperforming habits surface on their own (no nagging review needed).
   const [strengthSortAsc, setStrengthSortAsc] = useState(true);
@@ -550,28 +551,28 @@ export default function HabitsScreen() {
     setWhisperText(text);
     setTimeout(() => setWhisperText(null), 4000);
   }, []);
-  const [vaultTab, setVaultTab] = useState<'trophies' | 'active' | 'paused'>('trophies');
+  const [storageTab, setStorageTab] = useState<'trophies' | 'active' | 'paused'>('trophies');
 
   const [habitModalVisible, setHabitModalVisible] = useState(false);
-  const vaultSheetRef = useRef<BottomSheetModal>(null);
-  // Close the vault when leaving this tab — a sheet shouldn't linger open across
+  const storageSheetRef = useRef<BottomSheetModal>(null);
+  // Close the storage when leaving this tab — a sheet shouldn't linger open across
   // a tab switch. useFocusEffect's cleanup runs on blur.
-  useFocusEffect(useCallback(() => () => vaultSheetRef.current?.dismiss(), []));
+  useFocusEffect(useCallback(() => () => storageSheetRef.current?.dismiss(), []));
   const snapPoints = useMemo(() => ['100%'], []);
-  const [vaultIndex, setVaultIndex] = useState(-1);
+  const [storageIndex, setStorageIndex] = useState(-1);
 
   // Safe Android Back Handler
   useEffect(() => {
     const backAction = () => {
       if (showSettings) { setShowSettings(false); return true; }
       if (habitModalVisible) { setHabitModalVisible(false); return true; }
-      if (vaultIndex >= 0) { vaultSheetRef.current?.dismiss(); return true; }
+      if (storageIndex >= 0) { storageSheetRef.current?.dismiss(); return true; }
       if (detailHabit) { setDetailHabit(null); return true; }
       return false;
     };
     const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
     return () => backHandler.remove();
-  }, [habitModalVisible, vaultIndex, detailHabit, showSettings]);
+  }, [habitModalVisible, storageIndex, detailHabit, showSettings]);
 
   const renderBackdrop = useCallback(
     (props: any) => <BottomSheetBackdrop {...props} disappearsOnIndex={-1} appearsOnIndex={0} opacity={0.6} />,
@@ -832,13 +833,13 @@ export default function HabitsScreen() {
     setHabitModalVisible(false);
   }, []);
 
-  const openVault = useCallback(() => {
+  const openStorage = useCallback(() => {
     Keyboard.dismiss();
-    vaultSheetRef.current?.present();
+    storageSheetRef.current?.present();
   }, []);
 
-  const closeVault = useCallback(() => {
-    vaultSheetRef.current?.dismiss();
+  const closeStorage = useCallback(() => {
+    storageSheetRef.current?.dismiss();
   }, []);
 
   const saveHabit = useCallback(() => {
@@ -869,7 +870,7 @@ export default function HabitsScreen() {
       status: 'active',
     };
     addOrUpdateHabit(newHabit);
-    // Monotonic unlock counter — only fresh habits tick it (PACT + VAULT at >=3).
+    // Monotonic unlock counter — only fresh habits tick it (PACT + STORAGE at >=3).
     if (!editingId) useAppStore.getState().incrementTotalHabitsCreated();
     closeSheet();
     // First-habit onboarding whisper — fires exactly once ever when user creates their first habit
@@ -987,9 +988,9 @@ export default function HabitsScreen() {
     return data;
   }, [scheduledHabits, selectedDateStr]);
 
-  // Memoized vault list
-  const vaultActive = useMemo(() => habits.filter((h: Habit) => h.status === 'active'), [habits]);
-  const vaultArchived = useMemo(() => habits.filter((h: Habit) => h.status === 'archived'), [habits]);
+  // Memoized storage list
+  const storageActive = useMemo(() => habits.filter((h: Habit) => h.status === 'active'), [habits]);
+  const storageArchived = useMemo(() => habits.filter((h: Habit) => h.status === 'archived'), [habits]);
 
   // Retired habits kept as trophies (vanished ones are excluded — they still
   // count in the grade but the user chose not to memorialize them).
@@ -1299,6 +1300,10 @@ export default function HabitsScreen() {
     return Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
   }, [habits]);
 
+  // Track peak-ever strength for the Sovereign overreach easter egg (read in challenges.tsx).
+  const notePeakStrength = useAppStore(s => s.notePeakStrength);
+  useEffect(() => { if (globalStrength != null) notePeakStrength(globalStrength); }, [globalStrength, notePeakStrength]);
+
 
   // ── Pact logic ──
   // Tier system: 1=easy (~50% of weekly schedule), 2=medium (~75%), 3=hard (100%)
@@ -1573,9 +1578,9 @@ export default function HabitsScreen() {
                 <TouchableOpacity onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setShowSettings(true); }} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
                   <Feather name="settings" size={20} color={theme.textMain} />
                 </TouchableOpacity>
-                {/* Vault/archive — always available (ungated). Count is an absolute
+                {/* Storage/archive — always available (ungated). Count is an absolute
                     superscript so a changing archived total never reflows the row. */}
-                <TouchableOpacity onPress={openVault} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
+                <TouchableOpacity onPress={openStorage} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
                   <View style={{ width: 20, height: 20, alignItems: 'center', justifyContent: 'center' }}>
                     <Feather name="archive" size={20} color={theme.textMain} />
                     {habits.filter(h => h.status === 'archived').length > 0 && (
@@ -1912,6 +1917,16 @@ export default function HabitsScreen() {
                         </TouchableOpacity>
                       </View>
 
+                      {/* SOVEREIGN rank — the easter-egg badge, shown where the grade lives */}
+                      {sovereignAwakened && (
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: -8, marginBottom: 20 }}>
+                          <Feather name="hexagon" size={13} color="#A855F7" />
+                          <Text style={{ color: '#A855F7', fontSize: 12, fontWeight: '900', letterSpacing: 3, textShadowColor: 'rgba(168,85,247,0.5)', textShadowRadius: 10, textShadowOffset: { width: 0, height: 0 } }}>SOVEREIGN</Text>
+                          <View style={{ flex: 1 }} />
+                          <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '700', letterSpacing: 1 }}>RANK</Text>
+                        </View>
+                      )}
+
                       {/* Sparkline — vertical bars */}
                       <View style={{ flexDirection: 'row', alignItems: 'flex-end', height: 140, gap: 2, marginBottom: 10 }}>
                         {points.map(p => {
@@ -2050,18 +2065,18 @@ export default function HabitsScreen() {
             </Pressable>
           </Modal>
 
-          {/* ── GORHOM VAULT SHEET ── */}
-          <BottomSheetModal ref={vaultSheetRef} snapPoints={snapPoints} enableDynamicSizing={false} index={0} topInset={insets.top} onChange={setVaultIndex} backdropComponent={renderBackdrop} backgroundStyle={{ backgroundColor: theme.bg, borderRadius: 32 }} handleIndicatorStyle={{ backgroundColor: theme.border, width: 40, height: 5 }}>
+          {/* ── GORHOM STORAGE SHEET ── */}
+          <BottomSheetModal ref={storageSheetRef} snapPoints={snapPoints} enableDynamicSizing={false} index={0} topInset={insets.top} onChange={setStorageIndex} backdropComponent={renderBackdrop} backgroundStyle={{ backgroundColor: theme.bg, borderRadius: 32 }} handleIndicatorStyle={{ backgroundColor: theme.border, width: 40, height: 5 }}>
             <View style={{ paddingHorizontal: 24, paddingTop: 10, paddingBottom: 16, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-              <Text style={{ fontSize: 28, fontWeight: '900', color: theme.textMain, letterSpacing: -1 }}>Vault.</Text>
-              <TouchableOpacity onPress={closeVault} hitSlop={15}><Feather name="x" size={24} color={theme.textMain} /></TouchableOpacity>
+              <Text style={{ fontSize: 28, fontWeight: '900', color: theme.textMain, letterSpacing: -1 }}>Storage.</Text>
+              <TouchableOpacity onPress={closeStorage} hitSlop={15}><Feather name="x" size={24} color={theme.textMain} /></TouchableOpacity>
             </View>
             {/* Segmented tabs — Trophies (retired, merged in here) / Active / Paused. */}
             <View style={{ flexDirection: 'row', gap: 6, paddingHorizontal: 24, marginBottom: 18 }}>
-              {([['trophies', 'Trophies', retiredHabits.length], ['active', 'Active', vaultActive.length], ['paused', 'Paused', vaultArchived.length]] as const).map(([key, label, count]) => {
-                const on = vaultTab === key;
+              {([['trophies', 'Trophies', retiredHabits.length], ['active', 'Active', storageActive.length], ['paused', 'Paused', storageArchived.length]] as const).map(([key, label, count]) => {
+                const on = storageTab === key;
                 return (
-                  <TouchableOpacity key={key} onPress={() => { setVaultTab(key); setBringBackId(null); }} style={{ flex: 1, paddingVertical: 9, borderRadius: 12, alignItems: 'center', backgroundColor: on ? theme.textMain : theme.surface, borderWidth: 1, borderColor: on ? theme.textMain : theme.border }}>
+                  <TouchableOpacity key={key} onPress={() => { setStorageTab(key); setBringBackId(null); }} style={{ flex: 1, paddingVertical: 9, borderRadius: 12, alignItems: 'center', backgroundColor: on ? theme.textMain : theme.surface, borderWidth: 1, borderColor: on ? theme.textMain : theme.border }}>
                     <Text style={{ color: on ? theme.bg : theme.textSub, fontWeight: '800', fontSize: 13 }}>{label}</Text>
                     <Text style={{ color: on ? theme.bg : theme.textSub, fontSize: 10, fontWeight: '700', opacity: 0.7, marginTop: 1 }}>{count}</Text>
                   </TouchableOpacity>
@@ -2070,7 +2085,7 @@ export default function HabitsScreen() {
             </View>
             <BottomSheetScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 40 }} showsVerticalScrollIndicator={false}>
               {/* TROPHIES — retired habits as medallions; long-press one to Bring back. */}
-              {vaultTab === 'trophies' && (
+              {storageTab === 'trophies' && (
                 retiredHabits.length === 0
                   ? <View style={{ alignItems: 'center', marginTop: 40 }}><Feather name="award" size={40} color={theme.textSub} style={{ opacity: 0.2 }} /></View>
                   : <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
@@ -2098,12 +2113,12 @@ export default function HabitsScreen() {
                     </View>
               )}
               {/* ACTIVE — tap to edit, archive, or delete (only if never completed). */}
-              {vaultTab === 'active' && (
-                vaultActive.length === 0
+              {storageTab === 'active' && (
+                storageActive.length === 0
                   ? <View style={{ alignItems: 'center', marginTop: 40 }}><Feather name="list" size={40} color={theme.textSub} style={{ opacity: 0.2 }} /></View>
-                  : vaultActive.map((h: Habit) => (
+                  : storageActive.map((h: Habit) => (
                       <View key={h.id} style={{ backgroundColor: theme.surface, borderRadius: 16, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: theme.border, flexDirection: 'row', alignItems: 'center' }}>
-                        <TouchableOpacity style={{ flex: 1 }} onPress={() => { closeVault(); openSheet(h); }}>
+                        <TouchableOpacity style={{ flex: 1 }} onPress={() => { closeStorage(); openSheet(h); }}>
                           <Text style={{ color: theme.textMain, fontSize: 16, fontWeight: '800' }}>{h.title}</Text>
                           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 }}>
                             <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '600', textTransform: 'capitalize' }}>{h.timeBlock}</Text>
@@ -2118,10 +2133,10 @@ export default function HabitsScreen() {
                     ))
               )}
               {/* PAUSED — archived; restore or delete (only if never completed). */}
-              {vaultTab === 'paused' && (
-                vaultArchived.length === 0
+              {storageTab === 'paused' && (
+                storageArchived.length === 0
                   ? <View style={{ alignItems: 'center', marginTop: 40 }}><Feather name="archive" size={40} color={theme.textSub} style={{ opacity: 0.2 }} /></View>
-                  : vaultArchived.map((h: Habit) => (
+                  : storageArchived.map((h: Habit) => (
                       <View key={h.id} style={{ backgroundColor: theme.surface, borderRadius: 16, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: theme.border, flexDirection: 'row', alignItems: 'center' }}>
                         <View style={{ flex: 1 }}>
                           <Text style={{ color: theme.textMain, fontSize: 16, fontWeight: '800' }}>{h.title}</Text>

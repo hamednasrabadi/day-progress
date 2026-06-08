@@ -160,7 +160,7 @@ const TRIGGERS: UnlockTrigger[] = [
   },
 
   // ── Habits ───────────────────────────────────────────────────────────────
-  // Pact unlocks at 3 habits. (The vault/archive is no longer gated — it ships
+  // Pact unlocks at 3 habits. (The storage/archive is no longer gated — it ships
   // available from day one — so this trigger announces Pact alone.)
   {
     featureIds: [FEATURE_IDS.PACT],

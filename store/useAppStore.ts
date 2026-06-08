@@ -480,10 +480,19 @@ interface AppState {
   isDarkMode: boolean;
   // Three-way theme: 'light' | 'dark' (graphite) | 'blue' (deep navy). isDarkMode
   // is kept as a mirror (true for dark + blue) so legacy readers keep working.
-  themeMode: 'light' | 'dark' | 'blue';
+  themeMode: 'light' | 'dark' | 'blue' | 'sovereign';
   calendarType: CalendarSystem;
   toggleTheme: () => void;
-  setThemeMode: (m: 'light' | 'dark' | 'blue') => void;
+  setThemeMode: (m: 'light' | 'dark' | 'blue' | 'sovereign') => void;
+  // Sovereign easter-egg reward — the hidden obsidian/amethyst theme + the
+  // "Sovereign" rank become available when true. Default false: awakened only by
+  // overreaching all four Challenge unlock conditions (LockScreen). Permanent once set.
+  sovereignAwakened: boolean;
+  setSovereignAwakened: (v: boolean) => void;
+  // Peak-ever global habit strength — for the Sovereign overreach (current strength can
+  // drop on an off day; this only ever rises, so the easter-egg progress never melts).
+  peakHabitStrength: number;
+  notePeakStrength: (current: number) => void;
   toggleCalendar: () => void;
 
   // ── Habits ──
@@ -507,7 +516,7 @@ interface AppState {
   ) => void;
 
   // ── Habit unlock counters (monotonic) ──
-  // totalHabitsCreated → PACT (>=3). (Vault/archive is ungated, ships on.)
+  // totalHabitsCreated → PACT (>=3). (Storage/archive is ungated, ships on.)
   // maxSingleHabitCompletions: highest lifetime completion total of any one
   //   habit → COMPLETION_NOTES (>=5). Maintained inside toggleHabitAction.
   // dayConqueredEver: latches true on the first fully-conquered day (every
@@ -818,6 +827,10 @@ export const useAppStore = create<AppState>()(
       // 3-way picker in Settings uses setThemeMode for the blue (navy) option.
       toggleTheme: () => set((s) => { const next = s.themeMode === 'light' ? 'dark' : 'light'; return { themeMode: next, isDarkMode: next !== 'light' }; }),
       setThemeMode: (m) => set({ themeMode: m, isDarkMode: m !== 'light' }),
+      sovereignAwakened: false, // earned-only — flipped true by the overreach trigger in LockScreen
+      setSovereignAwakened: (v) => set({ sovereignAwakened: v }),
+      peakHabitStrength: 0,
+      notePeakStrength: (current) => set((s) => ({ peakHabitStrength: Math.max(s.peakHabitStrength ?? 0, current) })),
       toggleCalendar: () => set((s) => ({
         calendarType: s.calendarType === 'shamsi' ? 'gregorian' : 'shamsi',
       })),

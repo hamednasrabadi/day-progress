@@ -62,8 +62,10 @@ function hexToRgba(hex: string, alpha: number): string {
 }
 
 type Theme = { bg: string; surface: string; border: string; textMain: string; textSub: string; danger: string; success: string; focusText: string; accent: string; };
-function getTheme(mode: 'light' | 'dark' | 'blue'): Theme {
+function getTheme(mode: 'light' | 'dark' | 'blue' | 'sovereign'): Theme {
   switch (mode) {
+    case 'sovereign':
+      return { bg: "#120A22", surface: "#1E1538", border: "#342856", textMain: "#EAE5F5", textSub: "#988BBC", danger: "#F43F5E", success: "#10B981", focusText: "#DED5F1", accent: "#A855F7" };
     case 'blue':
       return { bg: "#0B1A2B", surface: "#122A40", border: "#1E3A52", textMain: "#E8F0F8", textSub: "#7FA0BC", danger: "#F43F5E", success: "#10B981", focusText: "#D8E6F4", accent: "#8B5CF6" };
     case 'dark':
@@ -685,12 +687,12 @@ export default function NotesScreen() {
 
   const [confirmModal, setConfirmModal] = useState<{ title: string; message: string; label: string; isSuccess?: boolean; onConfirm: () => void; } | null>(null);
 
-  const vaultSheetRef = useRef<BottomSheetModal>(null);
-  // Close the vault when leaving this tab — a sheet shouldn't linger open across
+  const storageSheetRef = useRef<BottomSheetModal>(null);
+  // Close the storage when leaving this tab — a sheet shouldn't linger open across
   // a tab switch. useFocusEffect's cleanup runs on blur.
-  useFocusEffect(useCallback(() => () => vaultSheetRef.current?.dismiss(), []));
+  useFocusEffect(useCallback(() => () => storageSheetRef.current?.dismiss(), []));
   const [sheetIndex, setSheetIndex] = useState(-1);
-  const [vaultTab, setVaultTab] = useState<"archived" | "trash" | "capsules">("archived");
+  const [storageTab, setStorageTab] = useState<"archived" | "trash" | "capsules">("archived");
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [noteTitle, setNoteTitle] = useState("");
@@ -865,7 +867,7 @@ export default function NotesScreen() {
       if (viewingImages) { setViewingImages(null); return true; }
       if (isSealing) { setIsSealing(false); return true; }
       if (isEditorVisible) { closeEditor(); return true; }
-      if (sheetIndex >= 0) { vaultSheetRef.current?.dismiss(); return true; }
+      if (sheetIndex >= 0) { storageSheetRef.current?.dismiss(); return true; }
       return false;
     };
     const backHandler = BackHandler.addEventListener("hardwareBackPress", backAction);
@@ -928,7 +930,7 @@ export default function NotesScreen() {
   // Diary entries live in the same `notes` slice but render in DiaryView, so
   // every list/filter that powers the regular feed has to exclude them. Once
   // the user toggles diaryMode on, the regular feed is hidden anyway, but the
-  // group chips, vault counts, and search results all keep working only
+  // group chips, storage counts, and search results all keep working only
   // because diary is excluded here at the source.
   const activeUnlockedNotes = useMemo(() => notes.filter((n) => n.status === "active" && !n.isLocked && !n.isSealed && n.kind !== 'diary'), [notes]);
   const uniqueGroups = useMemo(() => Array.from(new Set(activeUnlockedNotes.map((n) => n.group).filter(g => g && g !== '$SYS_OPENED_CAPSULE'))) as string[], [activeUnlockedNotes]);
@@ -936,16 +938,16 @@ export default function NotesScreen() {
   // Diary feed — every diary-kind note still in active or archived state.
   // We deliberately keep archived diary entries visible; archiving in diary
   // context means "older / set aside," not "deleted." Trashed entries drop
-  // out (they're in the vault).
+  // out (they're in the storage).
   const diaryNotes = useMemo(
     () => notes.filter(n => n.kind === 'diary' && n.status !== 'trash'),
     [notes]
   );
 
-  // Vault Data
+  // Storage Data
   const archivedNotes = useMemo(() => notes.filter((n) => n.status === "archived" && n.group !== '$SYS_OPENED_CAPSULE' && n.kind !== 'diary'), [notes]);
   const trashNotes = useMemo(() => notes.filter((n) => n.status === "trash"), [notes]);
-  const vaultCapsules = useMemo(() => notes.filter((n) => n.group === '$SYS_OPENED_CAPSULE' && n.status !== 'trash'), [notes]);
+  const storageCapsules = useMemo(() => notes.filter((n) => n.group === '$SYS_OPENED_CAPSULE' && n.status !== 'trash'), [notes]);
 
   // Capsules that have unlocked but haven't been opened yet — still sealed
   // (the user hasn't read them), unlock moment passed, and not an event-locked
@@ -1009,11 +1011,11 @@ export default function NotesScreen() {
       const hasHardware = await LocalAuthentication.hasHardwareAsync();
       const isEnrolled = await LocalAuthentication.isEnrolledAsync();
       if (hasHardware && isEnrolled) {
-        const auth = await LocalAuthentication.authenticateAsync({ promptMessage: "Unlock Biometric Vault" });
+        const auth = await LocalAuthentication.authenticateAsync({ promptMessage: "Unlock Biometric Storage" });
         if (auth.success) { setActiveFilter(id); } 
         else { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error); }
       } else {
-        setConfirmModal({ title: "Vault Unavailable", message: "No biometric security is configured on this device.", label: "OK", onConfirm: () => setConfirmModal(null) });
+        setConfirmModal({ title: "Storage Unavailable", message: "No biometric security is configured on this device.", label: "OK", onConfirm: () => setConfirmModal(null) });
       }
     } else {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -1410,13 +1412,13 @@ export default function NotesScreen() {
                   return !prev;
                 });
               }} hitSlop={15}><Feather name="search" size={20} color={isSearchOpen ? theme.textMain : theme.textMain} /></TouchableOpacity>
-              {/* Vault hidden in diary mode — diary entries don't get
+              {/* Storage hidden in diary mode — diary entries don't get
                   archived to a separate place; archiving and deleting them
                   happen via long-press on each entry instead. Mixing the
-                  vault button into a diary view also implies cross-mode
+                  storage button into a diary view also implies cross-mode
                   archiving that doesn't actually exist. */}
               {!diaryMode && (
-                <TouchableOpacity onPress={() => vaultSheetRef.current?.present()} hitSlop={15}><Feather name="archive" size={20} color={theme.textMain} /></TouchableOpacity>
+                <TouchableOpacity onPress={() => storageSheetRef.current?.present()} hitSlop={15}><Feather name="archive" size={20} color={theme.textMain} /></TouchableOpacity>
               )}
               {/* Diary settings — only visible in diary mode. Sits BEFORE the
                   diary toggle so the toggle stays in the same position
@@ -2640,36 +2642,36 @@ export default function NotesScreen() {
             />
           )}
 
-          <BottomSheetModal ref={vaultSheetRef} snapPoints={["100%"]} enableDynamicSizing={false} index={0} topInset={insets.top} onChange={setSheetIndex} backdropComponent={renderBackdrop} backgroundStyle={{ backgroundColor: theme.bg, borderRadius: 32 }} handleIndicatorStyle={{ backgroundColor: theme.border, width: 40, height: 5 }}>
+          <BottomSheetModal ref={storageSheetRef} snapPoints={["100%"]} enableDynamicSizing={false} index={0} topInset={insets.top} onChange={setSheetIndex} backdropComponent={renderBackdrop} backgroundStyle={{ backgroundColor: theme.bg, borderRadius: 32 }} handleIndicatorStyle={{ backgroundColor: theme.border, width: 40, height: 5 }}>
             <View style={{ paddingHorizontal: 24, paddingTop: 10, paddingBottom: 16, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-              <Text style={{ fontSize: 28, fontWeight: "900", color: theme.textMain, letterSpacing: -1 }}>Vault.</Text>
+              <Text style={{ fontSize: 28, fontWeight: "900", color: theme.textMain, letterSpacing: -1 }}>Storage.</Text>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 16 }}>
-                {vaultTab === "trash" && trashNotes.length > 0 && (<TouchableOpacity onPress={emptyTrash} hitSlop={10}><Text style={{ color: theme.danger, fontWeight: "800", fontSize: 14 }}>Purge all</Text></TouchableOpacity>)}
-                <TouchableOpacity onPress={() => vaultSheetRef.current?.dismiss()} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}><Feather name="x" size={24} color={theme.textMain} /></TouchableOpacity>
+                {storageTab === "trash" && trashNotes.length > 0 && (<TouchableOpacity onPress={emptyTrash} hitSlop={10}><Text style={{ color: theme.danger, fontWeight: "800", fontSize: 14 }}>Purge all</Text></TouchableOpacity>)}
+                <TouchableOpacity onPress={() => storageSheetRef.current?.dismiss()} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}><Feather name="x" size={24} color={theme.textMain} /></TouchableOpacity>
               </View>
             </View>
             <View style={{ paddingHorizontal: 24, marginBottom: 20 }}>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
                 {(["archived", "trash", "capsules"] as const).map((t) => (
-                  <TouchableOpacity key={t} onPress={() => setVaultTab(t)} style={{ paddingVertical: 10, paddingHorizontal: 16, borderRadius: 20, backgroundColor: vaultTab === t ? theme.textMain : theme.surface, borderWidth: 1, borderColor: theme.border }}>
-                    <Text style={{ color: vaultTab === t ? theme.bg : theme.textSub, fontWeight: "800", fontSize: 13, textTransform: "capitalize" }}>{t}</Text>
+                  <TouchableOpacity key={t} onPress={() => setStorageTab(t)} style={{ paddingVertical: 10, paddingHorizontal: 16, borderRadius: 20, backgroundColor: storageTab === t ? theme.textMain : theme.surface, borderWidth: 1, borderColor: theme.border }}>
+                    <Text style={{ color: storageTab === t ? theme.bg : theme.textSub, fontWeight: "800", fontSize: 13, textTransform: "capitalize" }}>{t}</Text>
                   </TouchableOpacity>
                 ))}
               </ScrollView>
             </View>
             <BottomSheetScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 40 }} showsVerticalScrollIndicator={false}>
-              {vaultTab === "trash" && trashNotes.length === 0 ? (
+              {storageTab === "trash" && trashNotes.length === 0 ? (
                 <View style={{ alignItems: "center", marginTop: 80 }}><Feather name="trash" size={64} color={theme.textSub} style={{ opacity: 0.15, marginBottom: 20 }} /><Text style={{ color: theme.textSub, fontSize: 15, fontWeight: "700" }}>Trash is empty.</Text></View>
               ) : null}
-              {vaultTab === "archived" && archivedNotes.length === 0 ? (
+              {storageTab === "archived" && archivedNotes.length === 0 ? (
                 <View style={{ alignItems: "center", marginTop: 80 }}><Feather name="archive" size={64} color={theme.textSub} style={{ opacity: 0.15, marginBottom: 20 }} /><Text style={{ color: theme.textSub, fontSize: 15, fontWeight: "700" }}>Archive is empty.</Text></View>
               ) : null}
-              {vaultTab === "capsules" && vaultCapsules.length === 0 ? (
+              {storageTab === "capsules" && storageCapsules.length === 0 ? (
                 <View style={{ alignItems: "center", marginTop: 80 }}><Feather name="book-open" size={64} color={theme.textSub} style={{ opacity: 0.15, marginBottom: 20 }} /><Text style={{ color: theme.textSub, fontSize: 15, fontWeight: "700" }}>No consumed memories yet.</Text></View>
               ) : null}
 
               {/* Render Standard Archived/Trash Notes (Protecting Sealed Items) */}
-              {(vaultTab === "trash" ? trashNotes : vaultTab === "archived" ? archivedNotes : []).map((n: Note) => {
+              {(storageTab === "trash" ? trashNotes : storageTab === "archived" ? archivedNotes : []).map((n: Note) => {
                 if (n.isSealed) {
                     return (
                       <View key={n.id} style={{ backgroundColor: theme.bg, borderRadius: 16, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: hexToRgba(artAccent, 0.4), flexDirection: "row", alignItems: "center" }}>
@@ -2703,7 +2705,7 @@ export default function NotesScreen() {
               })}
 
               {/* Render Consumed Capsules with Invisible Long-Press Delete */}
-              {vaultTab === "capsules" && vaultCapsules.map((n: Note) => (
+              {storageTab === "capsules" && storageCapsules.map((n: Note) => (
                 <TouchableOpacity 
                   key={n.id} 
                   onPress={() => setReadingCapsule(n)} 

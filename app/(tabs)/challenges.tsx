@@ -27,6 +27,8 @@ import { useAppStore, Task, Habit, CalendarSystem, Challenge, Achievement, Achie
 import { calculateGlobalStrength } from '../../lib/habitScore';
 import { isRtl } from '../../lib/rtl';
 import { PresetPickerSheet } from '../../components/challenges/PresetPickerSheet';
+import { SovereignUnlockButton } from '../../components/SovereignUnlockButton';
+import { SovereignCeremony } from '../../components/SovereignCeremony';
 import { ChallengePreset, CHALLENGE_PRESETS } from '../../lib/challengePresets';
 import { syncChallengeNotifications } from '../../lib/challengeNotifications';
 import { consecutiveDaysEndingToday, computeChain } from '../../lib/challengeChain';
@@ -1012,14 +1014,32 @@ const LOCK_FOCUS_HOURS = 6;
 const LOCK_TASKS = 10;
 const LOCK_HABIT_SCORE = 30;
 const LOCK_PROMISES_KEPT = 1;
+// Sovereign easter egg — extra needed PAST each requirement to awaken the hidden theme
+// (~double the unlock bar). Strength uses peak-ever so an off day can't melt the progress.
+const OVER_FOCUS = 4;     // 6 → 10 hrs
+const OVER_TASKS = 10;    // 10 → 20
+const OVER_HABIT = 20;    // 30 → 50 (peak strength)
+const OVER_PROMISE = 2;   // 1 → 3
+const SOVEREIGN_ACCENT = '#A855F7';
+const SOVEREIGN_ACCENT_SOFT = '#C9A8FF';
+const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
 
 const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 
 // Earned action — filled & lifted when all four conditions are met, ghosted
 // while locked, and confirmed (green, "UNLOCKED") the moment it's tapped.
-const EarnedButton = ({ theme, allMet, unlocked, onPress }: { theme: any; allMet: boolean; unlocked: boolean; onPress: () => void }) => {
+const EarnedButton = ({ theme, allMet, unlocked, sovereign, onPress }: { theme: any; allMet: boolean; unlocked: boolean; sovereign?: boolean; onPress: () => void }) => {
   const scale = useRef(new Animated.Value(1)).current;
   const press = (to: number) => Animated.spring(scale, { toValue: to, friction: 6, tension: 220, useNativeDriver: true }).start();
+  // Overreached all four → swap the calm pill for the electric amethyst UNLOCK. Pressing it
+  // awakens Sovereign (the caller's onPress handles that).
+  if (sovereign && !unlocked) {
+    return (
+      <View style={{ marginTop: 30, alignSelf: 'stretch' }}>
+        <SovereignUnlockButton onPress={onPress} />
+      </View>
+    );
+  }
   const lifted = allMet || unlocked;
   const bg = unlocked ? '#10B981' : allMet ? theme.textMain : 'transparent';
   const fg = unlocked ? '#FFFFFF' : allMet ? theme.bg : theme.textSub;
@@ -1143,10 +1163,11 @@ const UnlockCeremony = ({ theme, onDone }: { theme: any; onDone: () => void }) =
   );
 };
 
-const LockScreen = ({ focusHrs, tasksDone, habitScore, promisesKept, deepWorkUnlocked, promiseUnlocked, strengthUnlocked, onUnlock, theme }: {
+const LockScreen = ({ focusHrs, tasksDone, habitScore, habitPeak, promisesKept, deepWorkUnlocked, promiseUnlocked, strengthUnlocked, onUnlock, theme }: {
   focusHrs: number;
   tasksDone: number;
   habitScore: number;
+  habitPeak: number;
   promisesKept: number;
   // Whether the FEATURE each condition measures is itself unlocked yet. A
   // condition whose feature is still locked can't be progressed — instead of
@@ -1163,6 +1184,12 @@ const LockScreen = ({ focusHrs, tasksDone, habitScore, promisesKept, deepWorkUnl
   const tasksPct = Math.min(1, tasksDone / LOCK_TASKS);
   const habitPct = Math.min(1, habitScore / LOCK_HABIT_SCORE);
   const promisePct = Math.min(1, promisesKept / LOCK_PROMISES_KEPT);
+  // Sovereign overreach fractions (0..1 toward the hidden target). 0 while the feature is
+  // locked. Strength uses habitPeak (peak-ever) so a later dip can't melt the progress.
+  const focusOver = clamp01((focusHrs - LOCK_FOCUS_HOURS) / OVER_FOCUS);
+  const tasksOver = clamp01((tasksDone - LOCK_TASKS) / OVER_TASKS);
+  const habitOver = clamp01((habitPeak - LOCK_HABIT_SCORE) / OVER_HABIT);
+  const promiseOver = clamp01((promisesKept - LOCK_PROMISES_KEPT) / OVER_PROMISE);
   // Per-condition hints, shown only while the underlying feature is locked.
   // Copy mirrors the real unlock thresholds: Deep Work + Promise both gate on
   // 4 active tasks (lib/unlockTriggers.ts); Strength on dayConqueredEver — a
@@ -1176,14 +1203,19 @@ const LockScreen = ({ focusHrs, tasksDone, habitScore, promisesKept, deepWorkUnl
   // locked feature's condition can never count as met: its bar stays empty and
   // shows the hint, so the gate holds until the user unlocks that feature.
   const conds = [
-    { key: 'focus',   label: 'Deep work',      pct: focusPct,   display: `${Math.round(focusHrs * 10) / 10} / ${LOCK_FOCUS_HOURS} hrs`,            met: !focusHint && focusPct >= 1,     locked: !!focusHint,   hint: focusHint },
-    { key: 'tasks',   label: 'Tasks done',     pct: tasksPct,   display: `${Math.min(tasksDone, LOCK_TASKS)} / ${LOCK_TASKS}`,                     met: tasksPct >= 1,                   locked: false,         hint: undefined as string | undefined },
-    { key: 'habit',   label: 'Habit strength', pct: habitPct,   display: `${Math.min(habitScore, LOCK_HABIT_SCORE)} / ${LOCK_HABIT_SCORE}`,         met: !habitHint && habitPct >= 1,     locked: !!habitHint,   hint: habitHint },
-    { key: 'promise', label: 'Promises kept',  pct: promisePct, display: `${Math.min(promisesKept, LOCK_PROMISES_KEPT)} / ${LOCK_PROMISES_KEPT}`,  met: !promiseHint && promisePct >= 1, locked: !!promiseHint, hint: promiseHint },
+    { key: 'focus',   label: 'Deep work',      pct: focusPct,   display: `${Math.round(focusHrs * 10) / 10} / ${LOCK_FOCUS_HOURS} hrs`,            met: !focusHint && focusPct >= 1,     over: focusHint ? 0 : focusOver,     locked: !!focusHint,   hint: focusHint },
+    { key: 'tasks',   label: 'Tasks done',     pct: tasksPct,   display: `${Math.min(tasksDone, LOCK_TASKS)} / ${LOCK_TASKS}`,                     met: tasksPct >= 1,                   over: tasksOver,                     locked: false,         hint: undefined as string | undefined },
+    { key: 'habit',   label: 'Habit strength', pct: habitPct,   display: `${Math.min(habitScore, LOCK_HABIT_SCORE)} / ${LOCK_HABIT_SCORE}`,         met: !habitHint && habitPct >= 1,     over: habitHint ? 0 : habitOver,     locked: !!habitHint,   hint: habitHint },
+    { key: 'promise', label: 'Promises kept',  pct: promisePct, display: `${Math.min(promisesKept, LOCK_PROMISES_KEPT)} / ${LOCK_PROMISES_KEPT}`,  met: !promiseHint && promisePct >= 1, over: promiseHint ? 0 : promiseOver, locked: !!promiseHint, hint: promiseHint },
   ];
   const metCount = conds.filter(c => c.met).length;
   const allMet = metCount === 4;
   const frac = metCount / 4;
+  // Sovereign trigger — overreaching ALL FOUR conditions awakens the hidden theme. The four
+  // over-fractions latch (monotonic counters + peak strength), so this fires when the last
+  // one completes. Permanent once set; the awakening ceremony will hook in here next.
+  const allOverreached = conds.every((c) => !c.locked && c.over >= 1);
+  const setSovereignAwakened = useAppStore((s) => s.setSovereignAwakened);
   const size = 132, stroke = 6, r = (size - stroke) / 2, circ = 2 * Math.PI * r;
 
   const ringAnim = useRef(new Animated.Value(0)).current;
@@ -1191,6 +1223,7 @@ const LockScreen = ({ focusHrs, tasksDone, habitScore, promisesKept, deepWorkUnl
   const [displayCount, setDisplayCount] = useState(0);
   const [unlocked, setUnlocked] = useState(false);
   const [ceremony, setCeremony] = useState(false);
+  const [sovereignCeremony, setSovereignCeremony] = useState(false);
 
   // Mount sweep: the ring arc draws 0 → n/4 while each row's bar fills with a
   // per-row stagger. useNativeDriver:false — we animate the SVG stroke offset
@@ -1236,6 +1269,15 @@ const LockScreen = ({ focusHrs, tasksDone, habitScore, promisesKept, deepWorkUnl
     setCeremony(true);
   };
 
+  // Overreached all four → tapping the electric UNLOCK awakens Sovereign (the deliberate
+  // "rise"), grants the theme, then plays the full-screen awakening ceremony, which unlocks
+  // challenges when it finishes.
+  const handleAwaken = () => {
+    if (!allOverreached || ceremony || sovereignCeremony) return;
+    setSovereignAwakened(true);
+    setSovereignCeremony(true);
+  };
+
   const ringColor = allMet || unlocked ? '#10B981' : theme.textMain;
 
   return (
@@ -1262,22 +1304,41 @@ const LockScreen = ({ focusHrs, tasksDone, habitScore, promisesKept, deepWorkUnl
               return (
                 <View key={c.key} style={{ gap: 8 }}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                    {c.locked ? <Feather name="lock" size={12} color={theme.textSub} /> : c.met ? <Feather name="check" size={13} color="#10B981" /> : <View style={{ width: 13, height: 13, borderRadius: 7, borderWidth: 1.5, borderColor: theme.textSub }} />}
+                    {/* fixed-width icon column so labels align across met / overreached / locked */}
+                    <View style={{ width: 16, alignItems: 'center' }}>
+                      {c.locked
+                        ? <Feather name="lock" size={12} color={theme.textSub} />
+                        : allMet && c.over >= 1
+                          ? <View style={{ width: 15, height: 15, borderRadius: 4.5, backgroundColor: SOVEREIGN_ACCENT, alignItems: 'center', justifyContent: 'center' }}><Feather name="check" size={10} color="#FFFFFF" /></View>
+                          : c.met
+                            ? <Feather name="check" size={13} color="#10B981" />
+                            : <View style={{ width: 13, height: 13, borderRadius: 7, borderWidth: 1.5, borderColor: theme.textSub }} />}
+                    </View>
                     <Text style={{ flex: 1, fontSize: 13, fontWeight: '700', color: c.met ? theme.textMain : theme.textSub }}>{c.label}</Text>
+                    {/* count stays capped at the requirement — the overshoot is never shown */}
                     <Text style={{ fontSize: 12, fontWeight: '700', color: c.met ? '#10B981' : theme.textSub, fontVariant: ['tabular-nums'] }}>{c.locked ? 'Locked' : c.display}</Text>
                   </View>
-                  <View style={{ height: 2, backgroundColor: hexToRgba(theme.textMain, isDark ? 0.1 : 0.08), overflow: 'hidden' }}>
-                    {!c.locked && <Animated.View style={{ height: '100%', width: barAnims[i].interpolate({ inputRange: [0, 1], outputRange: ['0%', `${c.pct * 100}%`] }), backgroundColor: col }} />}
+                  {/* hairline + amethyst overreach (Sovereign hint): only AFTER all four are met, push one past its requirement */}
+                  <View style={{ height: 8, justifyContent: 'center' }}>
+                    {!c.locked && allMet && c.over > 0 && <View style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${c.over * 100}%`, backgroundColor: hexToRgba(SOVEREIGN_ACCENT, 0.18), borderRadius: 4 }} />}
+                    <View style={{ height: 2, backgroundColor: hexToRgba(theme.textMain, isDark ? 0.1 : 0.08), overflow: 'hidden' }}>
+                      {!c.locked && <Animated.View style={{ height: '100%', width: barAnims[i].interpolate({ inputRange: [0, 1], outputRange: ['0%', `${c.pct * 100}%`] }), backgroundColor: col }} />}
+                      {!c.locked && allMet && c.over > 0 && <View style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${c.over * 100}%`, backgroundColor: SOVEREIGN_ACCENT }} />}
+                    </View>
+                    {!c.locked && allMet && c.over > 0 && c.over < 1 && <View style={{ position: 'absolute', left: `${c.over * 100}%`, top: '50%', width: 4, height: 4, borderRadius: 2, marginLeft: -2, marginTop: -2, backgroundColor: SOVEREIGN_ACCENT_SOFT }} />}
                   </View>
                   {c.locked && c.hint ? <Text style={{ fontSize: 11, color: theme.textSub, marginTop: 2, lineHeight: 16, opacity: 0.85 }}>{c.hint}</Text> : null}
                 </View>
               );
             })}
           </View>
-          <EarnedButton theme={theme} allMet={allMet} unlocked={unlocked} onPress={handleUnlock} />
+          <EarnedButton theme={theme} allMet={allMet} unlocked={unlocked} sovereign={allOverreached} onPress={allOverreached ? handleAwaken : handleUnlock} />
         </View>
       </ScrollView>
-      {ceremony && <UnlockCeremony theme={theme} onDone={onUnlock} />}
+      {/* Mutually exclusive — overreach plays the Sovereign ceremony, never both. */}
+      {sovereignCeremony
+        ? <SovereignCeremony onDone={() => { setSovereignCeremony(false); onUnlock(); }} />
+        : ceremony ? <UnlockCeremony theme={theme} onDone={onUnlock} /> : null}
     </SafeAreaView>
   );
 };
@@ -1311,12 +1372,19 @@ const LockGate = ({ onUnlock, theme }: { onUnlock: () => void; theme: any }) => 
     return calculateGlobalStrength(allHabits, todayStr);
   }, [allHabits]);
   const promisesKept = promiseStats.keptTotal;
+  // Peak-ever strength for the Sovereign overreach — bump the stored peak from the current
+  // value, and pass the higher of the two down (so a later dip can't lower the over-fraction).
+  const peakStored = useAppStore((s) => s.peakHabitStrength ?? 0);
+  const notePeakStrength = useAppStore((s) => s.notePeakStrength);
+  useEffect(() => { notePeakStrength(habitScore); }, [habitScore, notePeakStrength]);
+  const habitPeak = Math.max(peakStored, habitScore);
 
   return (
     <LockScreen
       focusHrs={focusHrs}
       tasksDone={tasksDone}
       habitScore={habitScore}
+      habitPeak={habitPeak}
       promisesKept={promisesKept}
       deepWorkUnlocked={deepWorkUnlocked}
       promiseUnlocked={promiseUnlocked}
@@ -1370,7 +1438,7 @@ const ChallengeTeaser = ({ theme, revealAt, onReveal }: { theme: any; revealAt: 
 };
 
 // ── GRAVEYARD SCREEN ────────────────────────────────────────────────
-// Promoted from a tab inside the Vault sheet to its own full-screen
+// Promoted from a tab inside the Storage sheet to its own full-screen
 // surface — the Graveyard is a place you visit, not a drawer. Each
 // buried challenge becomes a portrait "case file" card with a case ID,
 // title, cause-of-death line, and a clinical dead-message. An ambient
@@ -2872,12 +2940,12 @@ export default function ChallengesScreen() {
   // the detail view.
   const [addEditOpen, setAddEditOpen] = useState(false);
   const presetsSheetRef = useRef<BottomSheetModal>(null);
-  const vaultSheetRef = useRef<BottomSheetModal>(null);
-  // Close the vault when leaving this tab — a sheet shouldn't linger open across
+  const storageSheetRef = useRef<BottomSheetModal>(null);
+  // Close the storage when leaving this tab — a sheet shouldn't linger open across
   // a tab switch. useFocusEffect's cleanup runs on blur.
-  useFocusEffect(useCallback(() => () => vaultSheetRef.current?.dismiss(), []));
+  useFocusEffect(useCallback(() => () => storageSheetRef.current?.dismiss(), []));
   // Graveyard is now its own full-screen surface, not a tab in the
-  // vault sheet. Vault becomes trash-only — kept as a sheet because
+  // storage sheet. Storage becomes trash-only — kept as a sheet because
   // trash actions (restore / delete forever) are transactional.
   const [graveyardOpen, setGraveyardOpen] = useState(false);
 
@@ -3573,7 +3641,7 @@ export default function ChallengesScreen() {
                       Dossier (won) — both are history surfaces. */}
                   {trashChallenges.length > 0 ? (
                     <TouchableOpacity
-                      onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); vaultSheetRef.current?.present(); }}
+                      onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); storageSheetRef.current?.present(); }}
                       style={{ alignSelf: 'center', marginTop: 24, paddingVertical: 8, paddingHorizontal: 16 }}
                       hitSlop={{ top: 10, bottom: 10, left: 20, right: 20 }}
                     >
@@ -4008,12 +4076,12 @@ export default function ChallengesScreen() {
               values pre-filled. */}
           <PresetPickerSheet ref={presetsSheetRef} theme={theme} takenPresetIds={takenPresetIds} onPick={openWithPreset} />
 
-          {/* ── TRASH SHEET — was the Vault, now scoped to trash only.
+          {/* ── TRASH SHEET — was the Storage, now scoped to trash only.
               The graveyard tab was promoted to its own full-screen
               surface (GraveyardScreen) because it's a place you visit,
               not a transient drawer. Trash stays here because its
               actions (restore / delete forever) are transactional. */}
-          <BottomSheetModal ref={vaultSheetRef} snapPoints={['85%']} backdropComponent={renderBackdrop} backgroundStyle={{ backgroundColor: theme.bg, borderRadius: 32 }} handleIndicatorStyle={{ backgroundColor: theme.border, width: 40, height: 5 }}>
+          <BottomSheetModal ref={storageSheetRef} snapPoints={['85%']} backdropComponent={renderBackdrop} backgroundStyle={{ backgroundColor: theme.bg, borderRadius: 32 }} handleIndicatorStyle={{ backgroundColor: theme.border, width: 40, height: 5 }}>
             <View style={{ paddingHorizontal: 24, paddingTop: 10, paddingBottom: 8, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
               <View>
                 <Text style={{ fontSize: 28, fontWeight: '900', color: theme.textMain, letterSpacing: -1 }}>Trash.</Text>
@@ -4025,7 +4093,7 @@ export default function ChallengesScreen() {
                 {trashChallenges.length > 0 && (
                   <TouchableOpacity onPress={() => { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning); setPurgeAllVisible(true); }} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}><Text style={{ color: L1_COLOR, fontWeight: '800', fontSize: 14 }}>Purge all</Text></TouchableOpacity>
                 )}
-                <TouchableOpacity onPress={() => vaultSheetRef.current?.dismiss()} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}><Feather name="x" size={24} color={theme.textMain} /></TouchableOpacity>
+                <TouchableOpacity onPress={() => storageSheetRef.current?.dismiss()} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}><Feather name="x" size={24} color={theme.textMain} /></TouchableOpacity>
               </View>
             </View>
             <BottomSheetScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 18, paddingBottom: 40 }} showsVerticalScrollIndicator={false}>
