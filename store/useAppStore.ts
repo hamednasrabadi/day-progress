@@ -845,7 +845,19 @@ export const useAppStore = create<AppState>()(
             : [...s.habits, habit],
         };
       }),
-      deleteHabit: (id) => set((s) => ({ habits: s.habits.filter(h => h.id !== id) })),
+      deleteHabit: (id) => set((s) => {
+        const habits = s.habits.filter(h => h.id !== id);
+        // Keep the Pact consistent when one of its habits is deleted: drop that
+        // habit and come down one level (same window + history), or dissolve the
+        // Pact if it was the last habit. Without this the Pact keeps a dead id
+        // that renders as "???".
+        let pact = s.pact;
+        if (pact?.habits?.some(ph => ph.id === id)) {
+          const remaining = pact.habits.filter(ph => ph.id !== id);
+          pact = remaining.length === 0 ? undefined : { ...pact, habits: remaining, level: Math.max(1, pact.level - 1) };
+        }
+        return { habits, pact };
+      }),
       retireHabit: (id, keep, retiredAt) => set((s) => ({
         habits: s.habits.map(h => h.id === id ? { ...h, status: 'retired' as HabitStatus, retiredAt, vanished: !keep } : h),
       })),

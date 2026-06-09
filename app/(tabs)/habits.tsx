@@ -524,8 +524,18 @@ export default function HabitsScreen() {
   const { pact, setPact } = useAppStore();
   const [showPactSetup, setShowPactSetup] = useState(false);
 
-  // Clean up old pact schema if present
-  useEffect(() => { if (pact && !pact.habits) setPact(undefined); }, []);
+  // Clean up old pact schema + self-heal orphaned habit refs. A habit deleted
+  // before the deleteHabit-prune landed leaves a dead id in pact.habits that
+  // renders as "???": drop any pact habit whose id no longer exists, level the
+  // Pact down to the surviving count, and dissolve it if none survive.
+  useEffect(() => {
+    if (!pact) return;
+    if (!pact.habits) { setPact(undefined); return; }
+    const live = pact.habits.filter(ph => habits.some(h => h.id === ph.id));
+    if (live.length !== pact.habits.length) {
+      setPact(live.length === 0 ? undefined : { ...pact, habits: live, level: Math.max(1, live.length) });
+    }
+  }, []);
   const [showPactDecision, setShowPactDecision] = useState(false);
   const [pactOutcomeOverride, setPactOutcomeOverride] = useState<'won' | 'lost' | null>(null);
   const [detailHabit, setDetailHabit] = useState<Habit | null>(null);
@@ -1805,24 +1815,40 @@ export default function HabitsScreen() {
           </Modal>
 
           {/* DELETE MODAL */}
-          {deleteConfirmId && (
-            <CustomConfirmModal 
-              visible={!!deleteConfirmId}
-              title={deleteConfirmId === '__PACT_DISSOLVE__' ? "Dissolve The Pact" : "Obliterate Habit"}
-              message={deleteConfirmId === '__PACT_DISSOLVE__' ? "This will end The Pact and erase all progress. Your habits stay, but the commitment is gone." : "Are you sure? This will permanently delete this habit and erase all its history."}
-              destructiveLabel={deleteConfirmId === '__PACT_DISSOLVE__' ? "Dissolve" : "Purge"} theme={theme}
-              onCancel={() => setDeleteConfirmId(null)}
-              onConfirm={() => {
-                if (deleteConfirmId === '__PACT_DISSOLVE__') {
-                  setPact(undefined); pactDecisionShown.current = false;
-                  showWhisper("Pact dissolved. The record remains.");
-                } else {
-                  deleteHabit(deleteConfirmId); closeSheet();
-                }
-                setDeleteConfirmId(null);
-              }}
-            />
-          )}
+          {deleteConfirmId && (() => {
+            const isDissolve = deleteConfirmId === '__PACT_DISSOLVE__';
+            // Deleting a habit that's part of the active Pact: warn, and state the
+            // consequence. deleteHabit (store) prunes the Pact down one level — or
+            // dissolves it if this was the last habit — so no dead id is left.
+            const inPact = !isDissolve && !!pact?.habits?.some(ph => ph.id === deleteConfirmId);
+            const lastInPact = inPact && pact!.habits.length === 1;
+            const title = isDissolve ? "Dissolve The Pact" : inPact ? "Delete a Pact habit?" : "Obliterate Habit";
+            const message = isDissolve
+              ? "This will end The Pact and erase all progress. Your habits stay, but the commitment is gone."
+              : lastInPact
+                ? `This is the only habit in your Level ${pact!.level} Pact — deleting it dissolves the Pact. The habit and its history are erased.`
+                : inPact
+                  ? `This habit is part of your Level ${pact!.level} Pact. Deleting it drops the Pact to Level ${pact!.level - 1} (the other habits carry on). The habit and its history are erased.`
+                  : "Are you sure? This will permanently delete this habit and erase all its history.";
+            return (
+              <CustomConfirmModal
+                visible={!!deleteConfirmId}
+                title={title}
+                message={message}
+                destructiveLabel={isDissolve ? "Dissolve" : "Purge"} theme={theme}
+                onCancel={() => setDeleteConfirmId(null)}
+                onConfirm={() => {
+                  if (isDissolve) {
+                    setPact(undefined); pactDecisionShown.current = false;
+                    showWhisper("Pact dissolved. The record remains.");
+                  } else {
+                    deleteHabit(deleteConfirmId); closeSheet();
+                  }
+                  setDeleteConfirmId(null);
+                }}
+              />
+            );
+          })()}
 
           {/* RETIRE MODAL — honor a finished habit. Both choices keep its frozen
               score in the grade; the choice is only whether to memorialize it on
