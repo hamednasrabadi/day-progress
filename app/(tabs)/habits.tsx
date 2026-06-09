@@ -7,7 +7,7 @@ import { getTheme } from '../../lib/timelineTheme';
 import { getWeeklyReviewWindow } from '../../lib/weeklyReview';
 import { rtlInputStyle } from '../../lib/rtl';
 import { SettingsSheet } from '../../components/SettingsSheet';
-import notifee, { TriggerType, RepeatFrequency } from '@notifee/react-native';
+import notifee, { TriggerType, RepeatFrequency, AlarmType } from '@notifee/react-native';
 import * as Haptics from 'expo-haptics';
 import { BlurView } from 'expo-blur';
 import { Feather } from '@expo/vector-icons';
@@ -661,7 +661,7 @@ export default function HabitsScreen() {
               body: `Time to get it done! (${todayCount}/${h.targetCount})`,
               android: { channelId: `notif_pop_v4` },
               ios: { sound: `pop.wav` }
-            }, { type: TriggerType.TIMESTAMP, timestamp: getNextTriggerTimestamp(hrs, mins) });
+            }, { type: TriggerType.TIMESTAMP, timestamp: getNextTriggerTimestamp(hrs, mins), alarmManager: { type: AlarmType.SET_EXACT_AND_ALLOW_WHILE_IDLE } });
           }
         }
 
@@ -691,7 +691,7 @@ export default function HabitsScreen() {
             title, body,
             android: { channelId: `notif_pop_v4` },
             ios: { sound: `pop.wav` },
-          }, { type: TriggerType.TIMESTAMP, timestamp: target.getTime() });
+          }, { type: TriggerType.TIMESTAMP, timestamp: target.getTime(), alarmManager: { type: AlarmType.SET_EXACT_AND_ALLOW_WHILE_IDLE } });
         }
       }
 
@@ -719,7 +719,7 @@ export default function HabitsScreen() {
               title, body,
               android: { channelId: `notif_pop_v4` },
               ios: { sound: `pop.wav` },
-            }, { type: TriggerType.TIMESTAMP, timestamp: target.getTime() });
+            }, { type: TriggerType.TIMESTAMP, timestamp: target.getTime(), alarmManager: { type: AlarmType.SET_EXACT_AND_ALLOW_WHILE_IDLE } });
           }
         }
       }

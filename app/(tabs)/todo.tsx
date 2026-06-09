@@ -864,12 +864,30 @@ export default function TodoScreen() {
       if (triggerDate.getTime() > Date.now()) {
         const offsetLabel = offset === 0 ? 'today' : offset === 1 ? 'tomorrow' : `in ${offset} days`;
         const body = taskData.notes ? taskData.notes.substring(0, 80) : (offset > 0 ? `Due ${offsetLabel} at ${taskData.deadlineTime || taskData.reminderTime}` : `Reminder for task due at ${taskData.deadlineTime || 'today'}`);
+        const title = taskData.priority === 'High' ? `🔴 ${taskData.text}` : (taskData.text || 'Task reminder');
+        // Android: schedule via notifee with SET_EXACT_AND_ALLOW_WHILE_IDLE so the
+        // reminder fires at its set time even in Doze (screen-off / idle). expo-
+        // notifications exposes no allow-while-idle control, so a locked phone
+        // deferred the alarm until the next unlock — the bug this fixes. Same
+        // proven path as the Deep Work end-alarm. iOS has no Doze deferral, so it
+        // keeps the expo scheduler that already works there.
+        if (Platform.OS === 'android') {
+          await ensureAppChannels();
+          const notifId = `task_${taskData.id ?? 'n'}_${triggerDate.getTime()}`;
+          await notifee.createTriggerNotification(
+            {
+              id: notifId,
+              title,
+              body,
+              android: { channelId: TASK_CHANNEL_ID, pressAction: { id: 'default' } },
+            },
+            { type: TriggerType.TIMESTAMP, timestamp: triggerDate.getTime(), alarmManager: { type: AlarmType.SET_EXACT_AND_ALLOW_WHILE_IDLE } },
+          );
+          return notifId;
+        }
         return await Notifications.scheduleNotificationAsync({
-          content: { title: taskData.priority === 'High' ? `🔴 ${taskData.text}` : taskData.text, body, sound: true },
-          // channelId on the Android trigger routes through the MAX-importance
-          // task-reminders channel created in lib/notifChannels.ts so the alert
-          // pops up as a heads-up banner instead of sitting silently in the tray.
-          trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: triggerDate, channelId: TASK_CHANNEL_ID },
+          content: { title, body, sound: true },
+          trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: triggerDate },
         });
       }
     } catch (e) { console.error("Failed to schedule notification:", e); }
@@ -877,15 +895,15 @@ export default function TodoScreen() {
   };
   const cancelTaskNotification = async (notificationId?: string) => {
     // Swallow errors — already-fired, already-cancelled, or invalid IDs all
-    // throw on some Android versions, and propagating that aborts the
-    // save-flow await chain (the new notificationId never gets persisted,
-    // leaving the task stamped with the OLD id pointing at nothing).
+    // throw on some platforms, and propagating that aborts the save-flow await
+    // chain (the new notificationId never gets persisted, leaving the task
+    // stamped with the OLD id pointing at nothing).
+    // Cancel via BOTH engines: tasks scheduled by a previous build hold an
+    // expo-notifications id; new Android ones hold a notifee trigger id. Trying
+    // both covers the migration window so no stale reminder survives an edit.
     if (!notificationId) return;
-    try {
-      await Notifications.cancelScheduledNotificationAsync(notificationId);
-    } catch {
-      // The notification's gone either way; nothing to recover.
-    }
+    try { await notifee.cancelTriggerNotification(notificationId); } catch {}
+    try { await Notifications.cancelScheduledNotificationAsync(notificationId); } catch {}
   };
 
   // ─── OPTIMISTIC ACTIONS — all use getState() to avoid stale closures ───
