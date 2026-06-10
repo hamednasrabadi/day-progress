@@ -493,6 +493,16 @@ interface AppState {
   // drop on an off day; this only ever rises, so the easter-egg progress never melts).
   peakHabitStrength: number;
   notePeakStrength: (current: number) => void;
+  // Sovereign overreach gate — the "fast" Challenge metrics (tasks, promises) are
+  // easy to stockpile, so their easter-egg overreach must NOT bank: it counts only
+  // the additionals earned AFTER all four conditions are first met. At that 4/4 moment
+  // we snapshot where tasks + promises sit, and overreach is measured from that
+  // snapshot. (Deep work + habit strength are slow burns — you can't fake 10 focus-hours
+  // or 50 strength in a day — so they bank straight from the requirement line and need
+  // no snapshot, which is why they aren't stored here.)
+  // null = not armed. Latched: written once, never moved (the arm is idempotent).
+  sovereignOverreachGate: { tasks: number; promise: number } | null;
+  armSovereignOverreach: (baseline: { tasks: number; promise: number }) => void;
   toggleCalendar: () => void;
 
   // ── Habits ──
@@ -831,6 +841,10 @@ export const useAppStore = create<AppState>()(
       setSovereignAwakened: (v) => set({ sovereignAwakened: v }),
       peakHabitStrength: 0,
       notePeakStrength: (current) => set((s) => ({ peakHabitStrength: Math.max(s.peakHabitStrength ?? 0, current) })),
+      sovereignOverreachGate: null,
+      // Idempotent + latched: arm exactly once, at the first 4/4. Re-calls (every render
+      // while all four stay met) are no-ops, so the captured baseline never drifts up.
+      armSovereignOverreach: (baseline) => set((s) => s.sovereignOverreachGate ? {} : { sovereignOverreachGate: baseline }),
       toggleCalendar: () => set((s) => ({
         calendarType: s.calendarType === 'shamsi' ? 'gregorian' : 'shamsi',
       })),

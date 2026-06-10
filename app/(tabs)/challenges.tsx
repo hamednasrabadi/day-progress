@@ -1180,16 +1180,29 @@ const LockScreen = ({ focusHrs, tasksDone, habitScore, habitPeak, promisesKept, 
   theme: any;
 }) => {
   const isDark = theme.isDark;
+  // Sovereign overreach gate (store): null until all four conditions are first met (4/4).
+  // It snapshots tasks + promises at that moment so their overreach counts only the
+  // additionals earned afterward — the quick-win metrics can't be banked toward the
+  // easter egg. (Deep work + habit strength bank from the requirement; not gated here.)
+  const overreachGate = useAppStore((s) => s.sovereignOverreachGate);
+  const armSovereignOverreach = useAppStore((s) => s.armSovereignOverreach);
   const focusPct = Math.min(1, focusHrs / LOCK_FOCUS_HOURS);
   const tasksPct = Math.min(1, tasksDone / LOCK_TASKS);
   const habitPct = Math.min(1, habitScore / LOCK_HABIT_SCORE);
   const promisePct = Math.min(1, promisesKept / LOCK_PROMISES_KEPT);
-  // Sovereign overreach fractions (0..1 toward the hidden target). 0 while the feature is
-  // locked. Strength uses habitPeak (peak-ever) so a later dip can't melt the progress.
+  // Sovereign overreach fractions (0..1 toward the hidden target). MIXED model:
+  //  • Deep work + Habit strength are slow burns — you can't fake 10 focus-hours or 50
+  //    strength in a day — so they bank straight from the requirement line: the surplus
+  //    you'd already built when you qualified is real proof, kept. (habitOver uses
+  //    habitPeak, peak-ever, so a later dip can't melt it.)
+  //  • Tasks + Promises are quick wins — easy to stockpile — so they DON'T bank: their
+  //    overreach counts only the additionals earned after the gate armed at 4/4,
+  //    measured from the snapshot taken then. 0 until armed.
+  // All four are still forced to 0 while their feature is locked (in the conds rows below).
   const focusOver = clamp01((focusHrs - LOCK_FOCUS_HOURS) / OVER_FOCUS);
-  const tasksOver = clamp01((tasksDone - LOCK_TASKS) / OVER_TASKS);
   const habitOver = clamp01((habitPeak - LOCK_HABIT_SCORE) / OVER_HABIT);
-  const promiseOver = clamp01((promisesKept - LOCK_PROMISES_KEPT) / OVER_PROMISE);
+  const tasksOver = overreachGate ? clamp01((tasksDone - overreachGate.tasks) / OVER_TASKS) : 0;
+  const promiseOver = overreachGate ? clamp01((promisesKept - overreachGate.promise) / OVER_PROMISE) : 0;
   // Per-condition hints, shown only while the underlying feature is locked.
   // Copy mirrors the real unlock thresholds: Deep Work + Promise both gate on
   // 4 active tasks (lib/unlockTriggers.ts); Strength on dayConqueredEver — a
@@ -1203,7 +1216,7 @@ const LockScreen = ({ focusHrs, tasksDone, habitScore, habitPeak, promisesKept, 
   // locked feature's condition can never count as met: its bar stays empty and
   // shows the hint, so the gate holds until the user unlocks that feature.
   const conds = [
-    { key: 'focus',   label: 'Deep work',      pct: focusPct,   display: `${Math.round(focusHrs * 10) / 10} / ${LOCK_FOCUS_HOURS} hrs`,            met: !focusHint && focusPct >= 1,     over: focusHint ? 0 : focusOver,     locked: !!focusHint,   hint: focusHint },
+    { key: 'focus',   label: 'Deep work',      pct: focusPct,   display: `${Math.round(Math.min(focusHrs, LOCK_FOCUS_HOURS) * 10) / 10} / ${LOCK_FOCUS_HOURS} hrs`,            met: !focusHint && focusPct >= 1,     over: focusHint ? 0 : focusOver,     locked: !!focusHint,   hint: focusHint },
     { key: 'tasks',   label: 'Tasks done',     pct: tasksPct,   display: `${Math.min(tasksDone, LOCK_TASKS)} / ${LOCK_TASKS}`,                     met: tasksPct >= 1,                   over: tasksOver,                     locked: false,         hint: undefined as string | undefined },
     { key: 'habit',   label: 'Habit strength', pct: habitPct,   display: `${Math.min(habitScore, LOCK_HABIT_SCORE)} / ${LOCK_HABIT_SCORE}`,         met: !habitHint && habitPct >= 1,     over: habitHint ? 0 : habitOver,     locked: !!habitHint,   hint: habitHint },
     { key: 'promise', label: 'Promises kept',  pct: promisePct, display: `${Math.min(promisesKept, LOCK_PROMISES_KEPT)} / ${LOCK_PROMISES_KEPT}`,  met: !promiseHint && promisePct >= 1, over: promiseHint ? 0 : promiseOver, locked: !!promiseHint, hint: promiseHint },
@@ -1211,11 +1224,23 @@ const LockScreen = ({ focusHrs, tasksDone, habitScore, habitPeak, promisesKept, 
   const metCount = conds.filter(c => c.met).length;
   const allMet = metCount === 4;
   const frac = metCount / 4;
-  // Sovereign trigger — overreaching ALL FOUR conditions awakens the hidden theme. The four
-  // over-fractions latch (monotonic counters + peak strength), so this fires when the last
-  // one completes. Permanent once set; the awakening ceremony will hook in here next.
+  // Sovereign trigger — overreaching ALL FOUR conditions awakens the hidden theme. Deep
+  // work + habit bank from the requirement; tasks + promises only accrue past the 4/4 gate
+  // snapshot. All four latch (monotonic counters + peak strength), so this fires when the
+  // last one crosses. Permanent once set.
   const allOverreached = conds.every((c) => !c.locked && c.over >= 1);
   const setSovereignAwakened = useAppStore((s) => s.setSovereignAwakened);
+  // Arm the overreach gate the first moment all four conditions are met — snapshotting
+  // where tasks + promises sit so their overreach counts only the additionals from here
+  // on. The store action is latched (idempotent), so re-running on later renders never
+  // moves the baseline. allMet counts only unlocked+met conditions, so a still-locked
+  // feature holds the gate shut. Lazily evaluated: arms the next time the locked screen
+  // sees 4/4 — it can only ever under-count tasks/promises, never hand out free credit.
+  useEffect(() => {
+    if (!overreachGate && allMet) {
+      armSovereignOverreach({ tasks: tasksDone, promise: promisesKept });
+    }
+  }, [overreachGate, allMet, tasksDone, promisesKept, armSovereignOverreach]);
   const size = 132, stroke = 6, r = (size - stroke) / 2, circ = 2 * Math.PI * r;
 
   const ringAnim = useRef(new Animated.Value(0)).current;
@@ -1278,7 +1303,9 @@ const LockScreen = ({ focusHrs, tasksDone, habitScore, habitPeak, promisesKept, 
     setSovereignCeremony(true);
   };
 
-  const ringColor = allMet || unlocked ? '#10B981' : theme.textMain;
+  // Overreaching all four turns the focal ring amethyst — matches the row checks + the
+  // electric UNLOCK button, so the whole screen reads "Sovereign" at once.
+  const ringColor = allOverreached ? SOVEREIGN_ACCENT : (allMet || unlocked ? '#10B981' : theme.textMain);
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: theme.bg }}>
@@ -1690,12 +1717,15 @@ const ReviewModal = ({ visible, challenge, theme, insets, calSystem, onResurrect
 };
 
 const SoftDeleteOverlay = ({ visible, title, subtitle, confirmLabel, cancelLabel, onConfirm, onCancel, theme }: { visible: boolean; title: string; subtitle?: string; confirmLabel: string; cancelLabel: string; onConfirm: () => void; onCancel: () => void; theme: any; }) => {
-  const fadeAnim = useRef(new Animated.Value(0)).current;
-  useEffect(() => { Animated.timing(fadeAnim, { toValue: visible ? 1 : 0, duration: visible ? 300 : 200, useNativeDriver: true }).start(); }, [visible]);
-  if (!visible) return null;
   const isDark = theme.isDark;
+  // A transparent RN Modal — NOT a zIndex overlay. A plain absolute view rendered at the
+  // screen root sat BENEATH the detail / edit / trash Modals (each presents in its own
+  // native window, which no zIndex can beat), so the confirmation was invisible until you
+  // backed out of those. As a Modal it always presents on top of whatever triggered it.
+  // animationType="fade" keeps the soft fade the old Animated.View had.
   return (
-    <Animated.View style={{ position: 'absolute', inset: 0, backgroundColor: isDark ? 'rgba(0,0,0,0.93)' : 'rgba(255,255,255,0.94)', zIndex: 300, justifyContent: 'center', alignItems: 'center', padding: 44, opacity: fadeAnim }}>
+    <Modal visible={visible} transparent animationType="fade" statusBarTranslucent onRequestClose={onCancel}>
+      <View style={{ flex: 1, backgroundColor: isDark ? 'rgba(0,0,0,0.93)' : 'rgba(255,255,255,0.94)', justifyContent: 'center', alignItems: 'center', padding: 44 }}>
       <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
       <Text style={{ fontSize: 10, fontWeight: '900', letterSpacing: 2, color: theme.textSub, marginBottom: 22 }}>HOLD ON</Text>
       <Text
@@ -1711,7 +1741,8 @@ const SoftDeleteOverlay = ({ visible, title, subtitle, confirmLabel, cancelLabel
       {subtitle && <Text style={{ fontSize: 13, color: theme.textSub, fontWeight: '500', textAlign: 'center', lineHeight: 20, marginBottom: 34 }}>{subtitle}</Text>}
       <TouchableOpacity onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy); onConfirm(); }} style={{ marginBottom: 18, paddingHorizontal: 34, paddingVertical: 14, borderWidth: 1, borderColor: hexToRgba(L1_COLOR, 0.4), borderRadius: 12 }}><Text style={{ color: L1_COLOR, fontSize: 13, fontWeight: '800', letterSpacing: 1 }}>{confirmLabel}</Text></TouchableOpacity>
       <TouchableOpacity onPress={onCancel} hitSlop={{ top: 15, bottom: 15, left: 30, right: 30 }}><Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '700' }}>{cancelLabel}</Text></TouchableOpacity>
-    </Animated.View>
+      </View>
+    </Modal>
   );
 };
 
@@ -2029,7 +2060,7 @@ const DetailLedger = React.memo(({ ledger, theme, calSystem, color }: {
 // log strip, description, milestones, and dated notes (add here, edit
 // recent ones, but remove only via the add/edit sheet).
 const ChallengeDetailView = ({
-  challenge, theme, calSystem, insets, onClose, onEdit, onProgress,
+  challenge, theme, calSystem, insets, onClose, onEdit, onTrash, onProgress,
   onCustomLog, onToggleMilestone, onAddNote, onEditNote, onRemoveNote,
 }: {
   challenge: Challenge | null;
@@ -2038,6 +2069,7 @@ const ChallengeDetailView = ({
   insets: { bottom: number };
   onClose: () => void;
   onEdit: () => void;
+  onTrash: () => void;
   onProgress: (delta: number) => void;
   onCustomLog: () => void;
   onToggleMilestone: (milestoneId: string) => void;
@@ -2344,9 +2376,16 @@ const ChallengeDetailView = ({
               <Feather name="chevron-left" size={22} color={theme.textMain} />
               <Text style={{ color: theme.textSub, fontSize: 14, fontWeight: '700' }}>Challenges</Text>
             </TouchableOpacity>
-            <TouchableOpacity onPress={onEdit} style={{ backgroundColor: theme.surface, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 100, borderWidth: 1, borderColor: theme.border }}>
-              <Text style={{ color: theme.textMain, fontWeight: '800', fontSize: 13 }}>Edit</Text>
-            </TouchableOpacity>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+              {/* Trash lives here in the view now — delete used to be buried at
+                  the bottom of the edit sheet (hold → view → edit → scroll). */}
+              <TouchableOpacity onPress={onTrash} hitSlop={10} style={{ width: 36, height: 36, borderRadius: 100, borderWidth: 1, borderColor: theme.border, backgroundColor: theme.surface, alignItems: 'center', justifyContent: 'center' }}>
+                <Feather name="trash-2" size={15} color={L1_COLOR} />
+              </TouchableOpacity>
+              <TouchableOpacity onPress={onEdit} style={{ backgroundColor: theme.surface, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 100, borderWidth: 1, borderColor: theme.border }}>
+                <Text style={{ color: theme.textMain, fontWeight: '800', fontSize: 13 }}>Edit</Text>
+              </TouchableOpacity>
+            </View>
           </View>
 
           {/* KeyboardAvoidingView + persist-on-tap so the Add-note input
@@ -3324,7 +3363,7 @@ export default function ChallengesScreen() {
   const confirmTrash = useCallback(() => {
     if (!softDeleteTarget) return;
     saveChallenges((useAppStore.getState().challenges as Challenge[]).map(c => c.id === softDeleteTarget.id ? { ...c, deadState: 'trash' as DeadState, deletedAt: Date.now() } : c), true);
-    setDetailChallengeId(null); setSoftDeleteTarget(null); setSoftDeleteMode(null);
+    setAddEditOpen(false); setDetailChallengeId(null); setSoftDeleteTarget(null); setSoftDeleteMode(null);
   }, [softDeleteTarget]);
   const requestDeleteForever = useCallback((c: Challenge) => { setSoftDeleteTarget(c); setSoftDeleteMode('forever'); }, []);
   const confirmDeleteForever = useCallback(() => {
@@ -4053,8 +4092,10 @@ export default function ChallengesScreen() {
                   ) : null}
                   <TouchableOpacity
                     onPress={() => {
+                      // Keep the edit sheet mounted and let the confirmation Modal present
+                      // on top (confirmTrash closes the sheet). Dismissing the sheet here
+                      // first races the confirm Modal's presentation on iOS.
                       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-                      setAddEditOpen(false);
                       requestTrash(editingChallenge);
                     }}
                     style={{ flex: 1, paddingVertical: 13, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(244,63,94,0.3)', flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 8 }}
@@ -4158,6 +4199,7 @@ export default function ChallengesScreen() {
                 insets={insets}
                 onClose={detailOnClose}
                 onEdit={detailOnEdit}
+                onTrash={() => requestTrash(dc)}
                 onProgress={detailOnProgress}
                 onCustomLog={detailOnCustomLog}
                 onToggleMilestone={detailOnToggleMilestone}

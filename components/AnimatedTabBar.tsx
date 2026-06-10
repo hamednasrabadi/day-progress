@@ -43,9 +43,10 @@ const META: Record<string, { icon: FeatherName; label: string }> = {
   todo: { icon: 'check-square', label: 'Tasks' },
   notes: { icon: 'file-text', label: 'Notes' },
   challenges: { icon: 'award', label: 'Challenges' },
+  lab: { icon: 'sliders', label: 'Lab' }, // DEV-SANDBOX: temporary; never commit, remove before shipping.
 };
 
-const TabButton = React.memo(function TabButton({ index, active, name, showLabel, isNew, focused, onPress, inactive, bg }: { index: number; active: SharedValue<number>; name: string; showLabel: boolean; isNew: boolean; focused: boolean; onPress: () => void; inactive: string; bg: string }) {
+const TabButton = React.memo(function TabButton({ index, active, name, showLabel, isNew, focused, onPress, inactive, bg, accent }: { index: number; active: SharedValue<number>; name: string; showLabel: boolean; isNew: boolean; focused: boolean; onPress: () => void; inactive: string; bg: string; accent: string }) {
   const meta = META[name];
   // Driven off `active` (optimistic), NOT a `focused` prop — so it starts on tap.
   const progress = useDerivedValue(() => withSpring(active.value === index ? 1 : 0, SOFT));
@@ -58,17 +59,20 @@ const TabButton = React.memo(function TabButton({ index, active, name, showLabel
     <Pressable onPress={onPress} style={press} accessibilityRole="button" accessibilityState={{ selected: focused }} accessibilityLabel={meta.label}>
       <Animated.View style={[{ width: 28, height: 28, alignItems: 'center', justifyContent: 'center' }, iconWrap]}>
         <Animated.View style={[{ position: 'absolute' }, grey]}><Feather name={meta.icon} size={24} color={inactive} /></Animated.View>
-        <Animated.View style={[{ position: 'absolute' }, on]}><Feather name={meta.icon} size={24} color={ACCENT} /></Animated.View>
-        {isNew ? <View style={{ position: 'absolute', top: -2, right: -4, width: 8, height: 8, borderRadius: 4, backgroundColor: ACCENT, borderWidth: 1.5, borderColor: bg }} /> : null}
+        <Animated.View style={[{ position: 'absolute' }, on]}><Feather name={meta.icon} size={24} color={accent} /></Animated.View>
+        {isNew ? <View style={{ position: 'absolute', top: -2, right: -4, width: 8, height: 8, borderRadius: 4, backgroundColor: accent, borderWidth: 1.5, borderColor: bg }} /> : null}
       </Animated.View>
-      <Animated.Text numberOfLines={1} style={[{ fontSize: 11, fontWeight: '800', color: ACCENT, marginTop: 3, height: 14 }, labelS]}>{meta.label}</Animated.Text>
+      <Animated.Text numberOfLines={1} style={[{ fontSize: 11, fontWeight: '800', color: accent, marginTop: 3, height: 14 }, labelS]}>{meta.label}</Animated.Text>
     </Pressable>
   );
 });
 
 export default function AnimatedTabBar({ state, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
-  const theme = getTheme(useAppStore(s => s.themeMode));
+  const themeMode = useAppStore(s => s.themeMode);
+  const theme = getTheme(themeMode);
+  // Amethyst accent for the Sovereign easter-egg theme; the usual blue otherwise.
+  const accent = themeMode === 'sovereign' ? '#A855F7' : ACCENT;
   const challengesUnlocked = useIsUnlocked(FEATURE_IDS.CHALLENGES_TAB);
   const challengesIsNew = useIsNew(FEATURE_IDS.CHALLENGES_TAB);
   const days = useDaysSinceInstall();
@@ -108,7 +112,7 @@ export default function AnimatedTabBar({ state, navigation }: BottomTabBarProps)
           navigation.navigate(route.name);
         };
 
-        return <TabButton key={route.key} index={index} active={active} name={route.name} showLabel={showLabel} isNew={isNew} focused={focused} onPress={onPress} inactive={theme.textSub} bg={theme.bg} />;
+        return <TabButton key={route.key} index={index} active={active} name={route.name} showLabel={showLabel} isNew={isNew} focused={focused} onPress={onPress} inactive={theme.textSub} bg={theme.bg} accent={accent} />;
       })}
     </View>
   );
