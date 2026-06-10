@@ -20,10 +20,21 @@ import { BottomSheetModal, BottomSheetModalProvider, BottomSheetBackdrop, Bottom
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { PALETTE, DEFAULT_COLOR } from '../../lib/palette';
 import { ColorPicker } from '../../components/ColorPicker';
+import { playSfx } from '../../lib/sounds';
 import { useAppStore, Habit, HabitStatus, TimeBlock, Note } from '../../store/useAppStore';
 import { calculateStrengthScore, isHabitScheduledOn } from '../../lib/habitScore';
 import { FEATURE_IDS, useIsUnlocked, useIsNew } from '../../lib/unlocks';
 import { Eclipse_Horizon } from '../../components/DayConqueredVariations';
+
+// Cool-ascent strength scale: indigo (early) → cyan (building) → the "strong" color at
+// 80+. The accents adapt per theme — brighter on dark backgrounds, deepened on light so
+// the small score text stays legible. `strong` is whatever the caller wants on top: the
+// habit's own color on per-habit views, the success green on aggregate scores.
+function strengthColor(score: number, dark: boolean, strong: string): string {
+  if (score >= 80) return strong;
+  if (score >= 50) return dark ? '#22D3EE' : '#0E7490';
+  return dark ? '#818CF8' : '#4F46E5';
+}
 
 const SCREEN_HEIGHT = Dimensions.get('window').height;
 
@@ -272,6 +283,7 @@ const HabitCard = React.memo(function HabitCard({ habit, selectedDateStr, todayC
   const triggerComplete = useCallback(() => {
     hasJustSwept.current = true;
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    playSfx('check');
     if (intervalRef.current) clearInterval(intervalRef.current);
     scale.value = withSpring(1.03, {}, () => { scale.value = withSpring(1); });
     onAction(habitIdRef.current, 'done', selectedDateRef.current);
@@ -346,7 +358,9 @@ const HabitCard = React.memo(function HabitCard({ habit, selectedDateStr, todayC
     // nothing AND linked challenges never advanced (the advance only fires on
     // action === 'done'). Routing through onAction with the real action makes a
     // checkbox completion advance its linked challenges, same as hold-to-sweep.
-    onAction(habitIdRef.current, statusRef.current === 'done' ? 'pending' : 'done', selectedDateRef.current);
+    const nextStatus = statusRef.current === 'done' ? 'pending' : 'done';
+    if (nextStatus === 'done') playSfx('check');
+    onAction(habitIdRef.current, nextStatus, selectedDateRef.current);
   }, [onAction]);
 
   const handleArchive = useCallback(() => {
@@ -397,7 +411,7 @@ const HabitCard = React.memo(function HabitCard({ habit, selectedDateStr, todayC
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
                 {currentStatus === 'rest' && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: theme.freeze + '20' }}><Text style={{ fontSize: 10, fontWeight: '800', color: theme.freeze }}>REST DAY</Text></View>}
                 {currentStatus === 'pending' && habit.targetCount > 1 && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: '#222' }}><Text style={{ fontSize: 10, fontWeight: '800', color: theme.textSub }}>{todayCount} / {habit.targetCount} {habit.unit}</Text></View>}
-                {strengthScore > 0 && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: hexToRgba(strengthScore >= 80 ? habit.color : strengthScore >= 50 ? theme.textSub : theme.danger, 0.15) }}><Text style={{ fontSize: 10, fontWeight: '900', color: strengthScore >= 80 ? habit.color : strengthScore >= 50 ? theme.textSub : theme.danger }}>{strengthScore}%</Text></View>}
+                {strengthScore > 0 && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: hexToRgba(strengthColor(strengthScore, theme.isDark, habit.color), 0.15) }}><Text style={{ fontSize: 10, fontWeight: '900', color: strengthColor(strengthScore, theme.isDark, habit.color) }}>{strengthScore}%</Text></View>}
                 {habit.hasReminder && currentStatus === 'pending' && <Feather name="bell" size={10} color={theme.textSub} style={{ opacity: 0.4 }} />}
                 {currentStatus === 'done' && notesUnlocked && onNotePress && (
                   <Pressable onPress={() => onNotePress(habit.id, selectedDateStr)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: habit.completionNotes?.[selectedDateStr] ? hexToRgba(habit.color, 0.15) : hexToRgba(theme.textSub, 0.15) }}>
@@ -1468,8 +1482,8 @@ export default function HabitsScreen() {
                     <Text style={{ fontSize: 9, color: theme.textSub, opacity: 0.5, fontWeight: '900', letterSpacing: 0.5 }}>• {calendarType.toUpperCase()}</Text>
                   </TouchableOpacity>
                   {globalStrength !== null && strengthScoreUnlocked && (
-                    <TouchableOpacity onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setShowStrengthHistory(true); }} hitSlop={10} style={{ paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, backgroundColor: hexToRgba(globalStrength >= 80 ? '#10B981' : globalStrength >= 50 ? theme.textSub : theme.danger, 0.15) }}>
-                      <Text style={{ fontSize: 10, fontWeight: '900', color: globalStrength >= 80 ? '#10B981' : globalStrength >= 50 ? theme.textSub : theme.danger }}>{globalStrength}%</Text>
+                    <TouchableOpacity onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setShowStrengthHistory(true); }} hitSlop={10} style={{ paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, backgroundColor: hexToRgba(strengthColor(globalStrength, theme.isDark, theme.success), 0.15) }}>
+                      <Text style={{ fontSize: 10, fontWeight: '900', color: strengthColor(globalStrength, theme.isDark, theme.success) }}>{globalStrength}%</Text>
                     </TouchableOpacity>
                   )}
                 </View>
@@ -1825,7 +1839,7 @@ export default function HabitsScreen() {
                         <View>
                           <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 2, textTransform: 'uppercase', marginBottom: 6 }}>Strength</Text>
                           <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 12 }}>
-                            <Text style={{ color: current >= 80 ? theme.success : current >= 50 ? theme.textMain : theme.danger, fontSize: 56, fontWeight: '900', letterSpacing: -3 }}>{current}%</Text>
+                            <Text style={{ color: strengthColor(current, theme.isDark, theme.success), fontSize: 56, fontWeight: '900', letterSpacing: -3 }}>{current}%</Text>
                             <Text style={{ color: diffColor, fontSize: 14, fontWeight: '800' }}>{diffLabel} <Text style={{ color: theme.textSub, fontWeight: '600' }}>in 30 days</Text></Text>
                           </View>
                         </View>
@@ -1837,7 +1851,7 @@ export default function HabitsScreen() {
                       {/* Sparkline — vertical bars */}
                       <View style={{ flexDirection: 'row', alignItems: 'flex-end', height: 140, gap: 2, marginBottom: 10 }}>
                         {points.map(p => {
-                          const color = p.score >= 80 ? theme.success : p.score >= 50 ? theme.textSub : theme.danger;
+                          const color = strengthColor(p.score, theme.isDark, theme.success);
                           return <View key={p.day} style={{ flex: 1, height: `${Math.max(2, (p.score / max) * 100)}%`, backgroundColor: color, opacity: 0.75, borderRadius: 1 }} />;
                         })}
                       </View>
@@ -1867,7 +1881,7 @@ export default function HabitsScreen() {
                                 scroll within instead of overflowing off-screen. */}
                             <ScrollView style={{ flexShrink: 1 }} showsVerticalScrollIndicator nestedScrollEnabled contentContainerStyle={{ gap: 10 }}>
                               {scoredHabits.map(({ h, s }) => {
-                                const c = s >= 80 ? h.color : s >= 50 ? theme.textSub : theme.danger;
+                                const c = strengthColor(s, theme.isDark, h.color);
                                 return (
                                   <View key={h.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
                                     <Feather name={h.icon} size={14} color={h.color} />
@@ -2310,7 +2324,7 @@ export default function HabitsScreen() {
                       {/* Strength Score — large */}
                       <View style={{ flexDirection: 'row', gap: 10, marginBottom: 24 }}>
                         <View style={{ flex: 1, backgroundColor: theme.surface, borderRadius: 16, paddingVertical: 18, paddingHorizontal: 8, borderWidth: 1, borderColor: theme.border, alignItems: 'center' }}>
-                          <Text numberOfLines={1} adjustsFontSizeToFit style={{ fontSize: 32, fontWeight: '900', color: dhStrength >= 80 ? dh.color : dhStrength >= 50 ? theme.textSub : theme.danger }}>{dhStrength}%</Text>
+                          <Text numberOfLines={1} adjustsFontSizeToFit style={{ fontSize: 32, fontWeight: '900', color: strengthColor(dhStrength, theme.isDark, dh.color) }}>{dhStrength}%</Text>
                           <Text numberOfLines={1} style={{ fontSize: 10, fontWeight: '700', color: theme.textSub, marginTop: 4, textTransform: 'uppercase', letterSpacing: 0.5 }}>Strength</Text>
                         </View>
                         <View style={{ flex: 1, backgroundColor: theme.surface, borderRadius: 16, paddingVertical: 18, paddingHorizontal: 8, borderWidth: 1, borderColor: theme.border, alignItems: 'center' }}>
