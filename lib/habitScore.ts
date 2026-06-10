@@ -7,7 +7,8 @@
  * habits-tab file (with its imports of every UI lib) into another tab.
  *
  * Rules per scheduled day:
- *   completion: +5 (or +7.5 if score < 50, hidden comeback bonus)
+ *   completion: +5  (+7.5 "comeback" only once a habit has reached 50 and then
+ *               slipped back under it — a first-time climb to 50 gets the normal +5)
  *   miss/skip:  -8
  *   rest day 1 in a row: 0   (rest is free)
  *   rest day 2 in a row: -2
@@ -25,6 +26,9 @@ const STRENGTH_GAIN = 5;
 const STRENGTH_LOSS = 8;
 const COMEBACK_THRESHOLD = 50;
 const COMEBACK_MULTIPLIER = 1.5;
+// A new habit's pull on the GLOBAL average ramps 0→1 over its first this-many days,
+// so adding a habit doesn't tank your overall strength — it blends in as it matures.
+const MATURITY_RAMP_DAYS = 14;
 const REST_PENALTY_BY_STREAK = [0, 0, -2, -4, -6, -8]; // index = streak length
 const JS_DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -74,6 +78,10 @@ export function calculateStrengthScore(habit: Habit, referenceDate: string): num
 
   let score = 0;
   let restStreak = 0;
+  // Latches true once the habit first reaches the threshold. Gates the comeback bonus
+  // so it only helps an ESTABLISHED habit that slipped back under 50 — never a habit
+  // climbing to 50 for the first time.
+  let hasReached50 = false;
   const paused = habit.pausedRanges;
 
   for (let t = createdUTC; t <= refUTC; t += 86400000) {
@@ -102,7 +110,9 @@ export function calculateStrengthScore(habit: Habit, referenceDate: string): num
     if (habit.skippedDays?.includes(dStr)) {
       score -= STRENGTH_LOSS;
     } else if ((dateCounts[dStr] || 0) >= habit.targetCount) {
-      const gain = score < COMEBACK_THRESHOLD ? STRENGTH_GAIN * COMEBACK_MULTIPLIER : STRENGTH_GAIN;
+      // Bonus only for an established habit clawing back (hasReached50) — a first-time
+      // climb to 50 earns the normal gain, no head start.
+      const gain = (score < COMEBACK_THRESHOLD && hasReached50) ? STRENGTH_GAIN * COMEBACK_MULTIPLIER : STRENGTH_GAIN;
       score += gain;
     } else {
       if (dStr === referenceDate) continue;
@@ -111,6 +121,7 @@ export function calculateStrengthScore(habit: Habit, referenceDate: string): num
 
     if (score < 0) score = 0;
     if (score > 100) score = 100;
+    if (score >= COMEBACK_THRESHOLD) hasReached50 = true;
   }
 
   return Math.round(score);
@@ -146,8 +157,24 @@ export function isDayConquered(habits: Habit[], dateStr: string): boolean {
 }
 
 /**
- * Global strength — average of `calculateStrengthScore` across all active
- * habits as of `referenceDate`. 0 when no active habits exist.
+ * Maturity weight (0..1) of a habit's pull on the GLOBAL average. Active habits ramp
+ * from 0 to full over their first MATURITY_RAMP_DAYS of calendar life, so a freshly
+ * created habit barely counts — adding one no longer tanks your strength; it blends in
+ * as it matures. Kept retired habits are trophies earned over time, so they count fully.
+ */
+function habitMaturityWeight(habit: Habit, referenceDate: string): number {
+  if (habit.status === 'retired') return 1;
+  const created = new Date(habit.createdAt);
+  const createdStr = `${created.getFullYear()}-${String(created.getMonth() + 1).padStart(2, '0')}-${String(created.getDate()).padStart(2, '0')}`;
+  const age = diffInDays(createdStr, referenceDate);
+  if (age <= 0) return 0;
+  return Math.min(1, age / MATURITY_RAMP_DAYS);
+}
+
+/**
+ * Global strength — maturity-WEIGHTED average of `calculateStrengthScore` across all
+ * counted habits as of `referenceDate`. The weighting (above) means a new habit doesn't
+ * drag the score down on day one; it joins gradually as it ages. 0 when none counted.
  */
 export function calculateGlobalStrength(habits: Habit[], referenceDate: string): number {
   // Active habits (live scores) AND kept retired habits (frozen trophies) count
@@ -156,6 +183,18 @@ export function calculateGlobalStrength(habits: Habit[], referenceDate: string):
   // for a habit you've dropped. Archived (long-paused) habits are excluded too.
   const counted = habits.filter(h => h.status === 'active' || (h.status === 'retired' && !h.vanished));
   if (counted.length === 0) return 0;
-  const scores = counted.map(h => calculateStrengthScore(h, referenceDate));
-  return Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
+  let weightedSum = 0;
+  let weightTotal = 0;
+  let plainSum = 0;
+  for (const h of counted) {
+    const score = calculateStrengthScore(h, referenceDate);
+    const weight = habitMaturityWeight(h, referenceDate);
+    weightedSum += score * weight;
+    weightTotal += weight;
+    plainSum += score;
+  }
+  // Everything counted is brand-new (all weight 0) — e.g. a first-day user whose habits
+  // were all created today. Fall back to the plain mean so the score still shows.
+  if (weightTotal === 0) return Math.round(plainSum / counted.length);
+  return Math.round(weightedSum / weightTotal);
 }
