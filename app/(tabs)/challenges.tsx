@@ -766,35 +766,84 @@ const CompletionBurst = ({ color, visible }: { color: string; visible: boolean }
   return (<View style={StyleSheet.absoluteFill} pointerEvents="none">{anims.map((anim, i) => { const angle = (i / 12) * Math.PI * 2; return <Animated.View key={i} style={{ position: 'absolute', top: '45%', left: '45%', width: 8, height: 8, borderRadius: 4, backgroundColor: color, opacity: anim, transform: [{ translateX: anim.interpolate({ inputRange: [0, 1], outputRange: [0, Math.cos(angle) * 90] }) }, { translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [0, Math.sin(angle) * 90] }) }, { scale: anim.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0, 1.6, 0.5] }) }] }} />; })}</View>);
 };
 
-// The narrator — reframed. No typewriter, no blinking cursor, no monospace.
-// A letter set in serif that fades in one line at a time, with a long beat of
-// stillness between lines and the dismiss word arriving last. The app pausing
-// the world to say one true thing. Used only for the rare, earned moments.
-const SERIF = Platform.OS === 'ios' ? 'Georgia' : 'serif';
+// The narrator — typed, frame-driven (requestAnimationFrame). Characters are
+// revealed from ELAPSED TIME, so the pace self-corrects instead of drifting and
+// stuttering the way per-character setTimeout did. The typing lives in its own
+// NarratorText component, so only the text repaints while it types — never the
+// symbol or the dismiss button — which is what keeps it smooth. Still holds on
+// punctuation (the delivery), monospace, no cursor, and runs faster than the
+// original (it dragged). Reuses the tone constants the "reframed" build left.
+const MONO = Platform.OS === 'ios' ? 'Courier New' : 'monospace';
+const NARRATOR_LINE_STYLE = { fontFamily: MONO, fontSize: 15, lineHeight: 27, letterSpacing: 0.2, textAlign: 'center' as const, marginBottom: 7 };
+
+const NarratorText = React.memo(function NarratorText({ lines, charMs, linePause, color, onDone }: { lines: string[]; charMs: number; linePause: number; color: string; onDone: () => void }) {
+  const [done, setDone] = useState<string[]>([]);
+  const [cur, setCur] = useState('');
+  const linesKey = lines.join('|');
+
+  useEffect(() => {
+    let alive = true;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const add = (fn: () => void, ms: number) => { const t = setTimeout(() => { if (alive) fn(); }, ms); timers.push(t); };
+    // The punctuation-pause curve — the soul of it: hold on the sentence's end.
+    const pause = (ch: string) =>
+      (ch === '.' || ch === '…') ? charMs * 5
+      : (ch === '!' || ch === '?') ? charMs * 4
+      : ch === ',' ? charMs * 3
+      : ch === ' ' ? charMs * 1.3
+      : charMs;
+    const localDone: string[] = [];
+    // ONE character per tick — a true typewriter, not a chunk-reveal. Smooth
+    // despite being per-char because only THIS isolated component repaints; the
+    // old lag came from re-rendering the whole ceremony on every letter.
+    const typeLine = (li: number) => {
+      if (!alive) return;
+      if (li >= lines.length) { onDone(); return; }
+      const line = lines[li];
+      let ci = 0;
+      const tick = () => {
+        if (!alive) return;
+        if (ci < line.length) { ci++; setCur(line.slice(0, ci)); add(tick, pause(line[ci - 1])); }
+        else { localDone.push(line); setDone(localDone.slice()); setCur(''); add(() => typeLine(li + 1), linePause); }
+      };
+      tick();
+    };
+    setDone([]); setCur('');
+    add(() => typeLine(0), 420); // a beat after the symbol settles
+    return () => { alive = false; timers.forEach(clearTimeout); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [linesKey, charMs, linePause]);
+
+  return (
+    <View style={{ width: '100%' }}>
+      {done.map((line, i) => (<Text key={i} style={[NARRATOR_LINE_STYLE, { color }]}>{line}</Text>))}
+      {cur.length > 0 && (<Text style={[NARRATOR_LINE_STYLE, { color }]}>{cur}</Text>)}
+    </View>
+  );
+});
+
 const NarratorCeremony = ({ moment, theme, onDone }: { moment: NarratorMoment; theme: any; onDone: () => void }) => {
   const ach = moment.achievementId ? ACHIEVEMENT_DEFS.find(a => a.id === moment.achievementId) : null;
   const effectiveTone = (moment.achievementId && EXISTENTIAL_OVERRIDES.has(moment.achievementId)) ? 'existential' as NarratorTone : moment.tone;
-  // The pause is the beat BETWEEN lines appearing (not a typing speed).
-  // Existential lingers; everything has a generous floor so nothing rushes.
-  const linePause = Math.max(750, NARRATOR_LINE_PAUSE[effectiveTone] * 2.4);
+  // Tone constants. One char per tick at 0.85× the original — a touch quicker
+  // than the (laggy) original felt, still a deliberate per-character pace. Tune
+  // this single SPEED number if it wants to be faster (lower) or slower (higher).
+  const SPEED = 0.85;
+  const charMs = NARRATOR_CHAR_SPEED[effectiveTone] * SPEED;
+  const linePause = Math.max(200, NARRATOR_LINE_PAUSE[effectiveTone] * 0.7);
   const linesKey = moment.lines.join('|');
 
   const symAnim = useRef(new Animated.Value(0)).current;
   const btnAnim = useRef(new Animated.Value(0)).current;
-  // One opacity value per line; rebuilt when the moment's lines change.
-  const lineAnims = useMemo(() => moment.lines.map(() => new Animated.Value(0)), [linesKey]);
 
   useEffect(() => {
-    symAnim.setValue(0); btnAnim.setValue(0); lineAnims.forEach(a => a.setValue(0));
-    const seq = Animated.sequence([
-      Animated.timing(symAnim, { toValue: 1, duration: 650, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
-      Animated.delay(350),
-      Animated.stagger(linePause, lineAnims.map(a => Animated.timing(a, { toValue: 1, duration: 800, easing: Easing.out(Easing.cubic), useNativeDriver: true }))),
-      Animated.timing(btnAnim, { toValue: 1, duration: 600, delay: 600, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
-    ]);
-    seq.start();
-    return () => seq.stop();
+    symAnim.setValue(0); btnAnim.setValue(0);
+    Animated.timing(symAnim, { toValue: 1, duration: 600, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
   }, [linesKey, moment.achievementId]);
+
+  const handleTypingDone = useCallback(() => {
+    Animated.timing(btnAnim, { toValue: 1, duration: 600, delay: 300, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
+  }, [btnAnim]);
 
   return (
     <View style={{ flex: 1, backgroundColor: theme.bg, justifyContent: 'center', alignItems: 'center', padding: 44 }}>
@@ -805,21 +854,7 @@ const NarratorCeremony = ({ moment, theme, onDone }: { moment: NarratorMoment; t
           {!moment.firstTime && (<Text style={{ fontSize: 9, fontWeight: '900', letterSpacing: 3, color: theme.textSub, textAlign: 'center', marginTop: 14, opacity: 0.7 }}>{ach.name}</Text>)}
         </Animated.View>
       )}
-      <View style={{ width: '100%' }}>
-        {moment.lines.map((line, i) => (
-          <Animated.Text
-            key={i}
-            style={{
-              opacity: lineAnims[i],
-              transform: [{ translateY: lineAnims[i].interpolate({ inputRange: [0, 1], outputRange: [6, 0] }) }],
-              fontFamily: SERIF, color: theme.textMain, fontSize: 18, fontWeight: '400',
-              lineHeight: 29, letterSpacing: 0.2, textAlign: 'center', marginBottom: 7,
-            }}
-          >
-            {line}
-          </Animated.Text>
-        ))}
-      </View>
+      <NarratorText key={linesKey} lines={moment.lines} charMs={charMs} linePause={linePause} color={theme.textMain} onDone={handleTypingDone} />
       <Animated.View style={{ position: 'absolute', bottom: 60, opacity: btnAnim }}>
         <TouchableOpacity onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); onDone(); }} hitSlop={{ top: 20, bottom: 20, left: 40, right: 40 }}>
           <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '900', letterSpacing: 2.5 }}>{moment.dismissLabel}</Text>
@@ -2064,6 +2099,14 @@ const ChallengeDetailView = ({
   const [newNote, setNewNote] = useState('');
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState('');
+  // Pull the note composer above the keyboard when it's focused (it's the last
+  // card in the detail). Ref-gated so the initial onContentSizeChange on mount
+  // doesn't yank the view to the bottom. Mirrors the Tasks form's keyboard feel.
+  const scrollRef = useRef<any>(null);
+  const noteFocusedRef = useRef(false);
+  const scrollNotesIntoView = useCallback(() => {
+    setTimeout(() => scrollRef.current?.scrollToEnd?.({ animated: true }), 60);
+  }, []);
 
   // Reset transient state when the user opens a different challenge,
   // closes the view, or the challenge is unmounted by the parent.
@@ -2376,12 +2419,13 @@ const ChallengeDetailView = ({
               and edit textareas stay reachable when the keyboard is up,
               dragging the scroll never closes the keyboard, and an
               explicit tap on empty content does. */}
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+          <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
           {/* Gesture-handler ScrollView — the +1 LOG button uses
               Gesture.Tap, which only negotiates cleanly with the
               native gesture system. Plain RN ScrollView would still
               steal touches via the JS responder under spam. */}
           <GHScrollView
+            ref={scrollRef}
             contentContainerStyle={{ padding: 16, paddingBottom: Math.max(insets.bottom, 24) + 80 }}
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
@@ -2625,6 +2669,9 @@ const ChallengeDetailView = ({
                 <TextInput
                   value={newNote}
                   onChangeText={setNewNote}
+                  onFocus={() => { noteFocusedRef.current = true; scrollNotesIntoView(); }}
+                  onBlur={() => { noteFocusedRef.current = false; }}
+                  onContentSizeChange={() => { if (noteFocusedRef.current) scrollNotesIntoView(); }}
                   multiline
                   placeholder={notes.length === 0 ? 'Why this matters. From you to you.' : 'Add a note for today…'}
                   placeholderTextColor={theme.isDark ? theme.textSub : theme.border}
