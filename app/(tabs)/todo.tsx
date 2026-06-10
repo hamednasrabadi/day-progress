@@ -10,7 +10,7 @@ import * as Haptics from 'expo-haptics';
 import { Feather } from '@expo/vector-icons';
 import { GestureHandlerRootView, Swipeable, ScrollView as GHScrollView } from 'react-native-gesture-handler';
 import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
-import { KeyboardStickyView, KeyboardAvoidingView, useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller';
+import { KeyboardStickyView, KeyboardAvoidingView, KeyboardAwareScrollView, KeyboardProvider, useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller';
 import * as Notifications from 'expo-notifications';
 import notifee, { TriggerType, AlarmType } from '@notifee/react-native';
 import { TASK_CHANNEL_ID, DEEPWORK_CHANNEL_ID, ensureAppChannels } from '../../lib/notifChannels';
@@ -2267,8 +2267,16 @@ export default function TodoScreen() {
             </BottomSheetModal>
 
             {/* ADD/EDIT TASK — pageSheet Modal (iOS: card-sheet that slides from bottom; Android: fullscreen fallback) */}
-            {/* Stable layout + KeyboardAvoidingView pads smoothly. No re-scroll on suggestion-strip height changes, so Persian composition never causes visual jump. */}
+            {/* Task add/edit sheet. A react-native Modal is its own window that
+                the root KeyboardProvider can't reach, so we re-establish one here
+                and drive the form with KeyboardAwareScrollView. Without the nested
+                provider the keyboard-controller views read a stale keyboard frame:
+                the sheet opens as if the keyboard were already up (cutting off half
+                the form) and leaves a dead band of padding below the keyboard once
+                it does open. translucent flags match the app's edge-to-edge config
+                so insets compute correctly. (Mirrors the Notes editor.) */}
             <Modal visible={taskModalVisible} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setTaskModalVisible(false)}>
+              <KeyboardProvider statusBarTranslucent navigationBarTranslucent>
               <View style={{ flex: 1, backgroundColor: theme.surface }}>
                 <SafeAreaView style={{ flex: 1 }} edges={['top']}>
                   {/* ── TOP BAR: Cancel | Commit ── */}
@@ -2281,8 +2289,7 @@ export default function TodoScreen() {
                       <Text style={{ color: theme.bg, fontWeight: '900', fontSize: 13 }}>Commit</Text>
                     </Pressable>
                   </View>
-                  <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
-                    <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingTop: 18, paddingBottom: 60, paddingHorizontal: 20 }} keyboardShouldPersistTaps="handled">
+                  <KeyboardAwareScrollView bottomOffset={24} style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingTop: 18, paddingBottom: 40, paddingHorizontal: 20 }} keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled">
                 {/* ── HEAVY TIER — title + notes (content being written) ── */}
                 <View style={{ backgroundColor: theme.bg, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12, marginBottom: 12, borderWidth: 1, borderColor: theme.border }}>
                   <TextInput style={[{ fontSize: 18, fontWeight: '800', color: theme.textMain, padding: 0 }, persianSafeInputStyle, rtlInputStyle(txt)]} placeholder="Task name..." placeholderTextColor={theme.textSub} value={txt} onChangeText={t => { setTxt(t); if (err) setErr(''); }} />
@@ -2560,10 +2567,10 @@ export default function TodoScreen() {
                   </Animated.View>
                 ) : null}
 
-                    </ScrollView>
-                  </KeyboardAvoidingView>
+                  </KeyboardAwareScrollView>
                 </SafeAreaView>
               </View>
+              </KeyboardProvider>
             </Modal>
 
             {/* STORAGE SHEET */}
