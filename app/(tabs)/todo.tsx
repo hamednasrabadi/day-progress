@@ -2276,7 +2276,7 @@ export default function TodoScreen() {
                       <Text style={{ color: theme.bg, fontWeight: '900', fontSize: 13 }}>Commit</Text>
                     </Pressable>
                   </View>
-                  <KeyboardAwareScrollView bottomOffset={24} style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingTop: 18, paddingBottom: 40, paddingHorizontal: 20 }} keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled">
+                  <KeyboardAwareScrollView bottomOffset={24} style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingTop: 18, paddingBottom: insets.bottom + 40, paddingHorizontal: 20 }} keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled">
                 {/* ── HEAVY TIER — title + notes (content being written) ── */}
                 <View style={{ backgroundColor: theme.bg, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12, marginBottom: 12, borderWidth: 1, borderColor: theme.border }}>
                   <TextInput style={[{ fontSize: 18, fontWeight: '800', color: theme.textMain, padding: 0 }, persianSafeInputStyle, rtlInputStyle(txt)]} placeholder="Task name..." placeholderTextColor={theme.textSub} value={txt} onChangeText={t => { setTxt(t); if (err) setErr(''); }} />
