@@ -149,7 +149,7 @@ export function IntentComposer({
             value={draft}
             onChangeText={setDraft}
             placeholder="What's today for?"
-            placeholderTextColor={theme.border}
+            placeholderTextColor={theme.textSub}
             maxLength={maxLabelLen}
             autoFocus
             onSubmitEditing={() => commit(draft)}

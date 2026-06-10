@@ -537,7 +537,7 @@ export function IntentPanel({
                   value={intentEditDraft}
                   onChangeText={setIntentEditDraft}
                   placeholder="What's the intent?"
-                  placeholderTextColor={theme.border}
+                  placeholderTextColor={theme.textSub}
                   multiline
                   autoFocus
                   maxLength={INTENT_LABEL_MAX}
