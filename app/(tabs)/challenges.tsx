@@ -715,7 +715,7 @@ const RosterCard = React.memo(({ challenge, theme, calSystem, index, hero, onBum
   return (
     <Reanimated.View
       entering={FadeInDown.delay(index * 70).springify().damping(15).stiffness(140)}
-      exiting={FadeOut.duration(280)} layout={LinearTransition.springify().damping(18)}
+      exiting={FadeOut.duration(280)} layout={LinearTransition.springify().damping(26).stiffness(110)}
       style={{ marginBottom: 10 }}
     >
       <Pressable onPress={onBump} onLongPress={onOpen} delayLongPress={300}
@@ -3426,21 +3426,14 @@ export default function ChallengesScreen() {
     return challenges.filter(c => c.deadState !== 'buried' && c.deadState !== 'achieved' && c.deadState !== 'trash');
   }, [challenges]);
 
-  // Roster split + ordering, memoized so it recomputes only when the active set
-  // changes — not on every unrelated re-render (progress taps, modal toggles,
-  // theme flips). It was previously recomputed inline on every render.
-  const { rosterSorted, rosterReviewable } = useMemo(() => {
+  // Roster split, memoized so it recomputes only when the active set changes —
+  // not on every unrelated re-render (progress taps, modal toggles, theme flips).
+  // No sort: challenges hold their natural creation order, so logging progress
+  // never reshuffles the list under you.
+  const { roster, rosterReviewable } = useMemo(() => {
     const alive = activeChallenges.filter(c => c.deadState !== 'dead' && c.deadState !== 'resurrected');
     const reviewable = activeChallenges.filter(c => c.deadState === 'dead' || c.deadState === 'resurrected');
-    const edgeScore = (c: Challenge) =>
-      c.current >= c.target ? Number.POSITIVE_INFINITY
-        : (c.deadlineTs ? (c.deadlineTs - Date.now()) / 86400000 : Number.POSITIVE_INFINITY);
-    const sorted = [...alive].sort((a, b) => {
-      const ea = edgeScore(a), eb = edgeScore(b);
-      if (ea !== eb) return ea - eb;
-      return (a.current / a.target) - (b.current / b.target);
-    });
-    return { rosterSorted: sorted, rosterReviewable: reviewable };
+    return { roster: alive, rosterReviewable: reviewable };
   }, [activeChallenges]);
 
   const buriedChallenges = useMemo(() => challenges.filter(c => c.deadState === 'buried'), [challenges]);
@@ -3649,10 +3642,10 @@ export default function ChallengesScreen() {
                       (need-review) keep their full-width overlay and sit
                       below until the death surfaces are reskinned. */}
                   {(() => {
-                    // Split + ordering computed in the rosterSorted / rosterReviewable
-                    // memo above (soonest deadline first; first is the hero, the rest
+                    // Split computed in the roster / rosterReviewable memo above
+                    // (natural creation order; the first card is the hero, the rest
                     // hold) — read here so it doesn't recompute on every render.
-                    const sorted = rosterSorted;
+                    const sorted = roster;
                     const reviewable = rosterReviewable;
                     const openCb = (c: Challenge) => () => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setDetailChallengeId(c.id); };
                     const editCb = (c: Challenge) => () => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy); openAddEditSheet(c); };
