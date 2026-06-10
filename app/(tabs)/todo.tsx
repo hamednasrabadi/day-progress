@@ -1875,29 +1875,32 @@ export default function TodoScreen() {
       const broken = promiseStats.monthlyBroken;
       const pendingPromises = tasks.filter(t => t.promised && !t.completed && !t.promiseBrokenAt && t.status !== 'trash' && t.status !== 'archived').length;
       return (
-        <View style={{ marginTop: 4, marginBottom: 14, paddingHorizontal: 14, paddingVertical: 12, borderRadius: 12, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.border, flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+        // One fixed-height row — never wraps. The stats size to their own
+        // content (no flex:1) and "THIS MONTH" is pinned right with
+        // marginLeft:'auto', so the PENDING stat slots in horizontally instead
+        // of bumping the row onto a second line. The vertical dividers were
+        // dropped — they ate the horizontal room that forced the wrap; the
+        // number+label grouping plus the gap between stats carry the
+        // separation on their own.
+        <View style={{ marginTop: 4, marginBottom: 14, paddingHorizontal: 14, paddingVertical: 12, borderRadius: 12, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.border, flexDirection: 'row', alignItems: 'center', gap: 10 }}>
           <Feather name="shield" size={14} color={theme.textSub} />
-          <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+          <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 12 }}>
             <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 5 }}>
               <Text style={{ color: theme.success, fontSize: 14, fontWeight: '900' }}>{kept}</Text>
-              <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 0.8 }}>KEPT</Text>
+              <Text numberOfLines={1} style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 0.8 }}>KEPT</Text>
             </View>
-            <View style={{ width: 1, height: 12, backgroundColor: theme.border }} />
             <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 5 }}>
               <Text style={{ color: theme.textMain, fontSize: 14, fontWeight: '900' }}>{broken}</Text>
-              <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 0.8 }}>BROKEN</Text>
+              <Text numberOfLines={1} style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 0.8 }}>BROKEN</Text>
             </View>
             {pendingPromises > 0 ? (
-              <>
-                <View style={{ width: 1, height: 12, backgroundColor: theme.border }} />
-                <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 5 }}>
-                  <Text style={{ color: theme.textMain, fontSize: 14, fontWeight: '900' }}>{pendingPromises}</Text>
-                  <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 0.8 }}>PENDING</Text>
-                </View>
-              </>
+              <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 5 }}>
+                <Text style={{ color: theme.textMain, fontSize: 14, fontWeight: '900' }}>{pendingPromises}</Text>
+                <Text numberOfLines={1} style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 0.8 }}>PENDING</Text>
+              </View>
             ) : null}
           </View>
-          <Text style={{ color: theme.textSub, fontSize: 9, fontWeight: '700', letterSpacing: 0.5, opacity: 0.7 }}>THIS MONTH</Text>
+          <Text numberOfLines={1} style={{ color: theme.textSub, fontSize: 9, fontWeight: '700', letterSpacing: 0.5, opacity: 0.7, marginLeft: 'auto' }}>THIS MONTH</Text>
         </View>
       );
     }
