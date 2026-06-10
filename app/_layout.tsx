@@ -21,10 +21,12 @@ import * as Notifications from 'expo-notifications';
 import * as SystemUI from 'expo-system-ui';
 import notifee, { EventType } from '@notifee/react-native';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
+import { preloadSounds } from '../lib/sounds';
 import { ensureAppChannels } from '../lib/notifChannels';
 import { useAppStore } from '../store/useAppStore';
 import { Whisper } from '../components/Whisper';
 import { GrowthIntro } from '../components/GrowthIntro';
+import { UpdateBanner } from '../components/UpdateBanner';
 import { getTheme } from '../lib/timelineTheme';
 import { todayStr, EMPTY_APP_STATE_FOR_UNLOCKS, useDaysSinceInstall, useIsUnlocked, FEATURE_IDS } from '../lib/unlocks';
 import { useUnlockTriggers } from '../lib/unlockTriggers';
@@ -203,6 +205,8 @@ export default function RootLayout() {
     // the user is doing. Idempotent — safe to call on every mount. Timeline has
     // its own channels and creates them lazily on first sync.
     ensureAppChannels();
+    // Preload UI sound effects so the first tap / completion plays with no lag.
+    preloadSounds();
 
     // Case 1: App was completely dead and Notifee forced it to wake for an alarm.
     notifee.getInitialNotification().then(initial => {
@@ -254,6 +258,10 @@ export default function RootLayout() {
         theme={theme}
         onBegin={() => setIntroSeen(true)}
       />
+
+      {/* "A new version is out" check — best-effort GitHub manifest fetch on launch.
+          Renders nothing when up to date or offline; see lib/updateCheck. */}
+      <UpdateBanner theme={theme} />
 
       {/* Full-screen alarm overlay — rendered above the entire navigator */}
       <Modal visible={!!activeAlarm} animationType="slide" transparent={false}>
