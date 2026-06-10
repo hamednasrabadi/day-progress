@@ -21,6 +21,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 // (same as habits.tsx / todo.tsx) — RN's built-in one with behavior=undefined on
 // Android fails to lift inputs inside full-screen Modals (e.g. the Ledger's add row).
 import { KeyboardAvoidingView, useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller';
+import { CHALLENGE_PALETTE, CHALLENGE_DEFAULT } from '../../lib/palette';
+import { ColorPicker } from '../../components/ColorPicker';
 import Reanimated, { useSharedValue, useAnimatedProps, useAnimatedStyle, withTiming, withDelay, withSequence, withSpring, withRepeat, cancelAnimation, interpolate, Easing as ReEasing, runOnJS, FadeIn, FadeInDown, FadeOut, LinearTransition } from 'react-native-reanimated';
 
 import { useAppStore, Task, Habit, CalendarSystem, Challenge, Achievement, AchievementId, Milestone, NoteEntry, DeadState, ChallengeUrgency, UrgencyStyle, NarratorTone, Note, ChallengeLink, LedgerEntry, LedgerSource, Stake, StakeKind, inferChallengeCadence, makeLedgerEntry } from '../../store/useAppStore';
@@ -58,26 +60,7 @@ function hexToRgba(hex: string, alpha: number): string {
 // continuous gradient rather than a random grid; the slate at the end
 // is the only non-spectrum slot, kept as a "premium / no-color" choice
 // for users who want the card to feel like graphite rather than candy.
-const COLORS = [
-  '#EF4444', // red
-  '#F97316', // orange
-  '#F59E0B', // amber
-  '#84CC16', // lime
-  '#22C55E', // green
-  '#10B981', // emerald
-  '#14B8A6', // teal
-  '#06B6D4', // cyan
-  '#0EA5E9', // sky
-  '#3B82F6', // blue
-  '#6366F1', // indigo
-  '#8B5CF6', // violet
-  '#A855F7', // purple
-  '#D946EF', // fuchsia
-  '#EC4899', // pink
-  '#F43F5E', // rose
-  '#BE185D', // wine
-  '#0F172A', // slate (premium near-black)
-];
+// Color palettes now live in lib/palette.ts (single source of truth).
 // Expanded icon set — picked to span the kinds of challenges users
 // actually create (movement, reading, writing, focus, social, sleep,
 // money, exploration). Rendered in a horizontal scroll using the
@@ -2643,7 +2626,7 @@ const ChallengeDetailView = ({
                   onChangeText={setNewNote}
                   multiline
                   placeholder={notes.length === 0 ? 'Why this matters. From you to you.' : 'Add a note for today…'}
-                  placeholderTextColor={theme.border}
+                  placeholderTextColor={theme.isDark ? theme.textSub : theme.border}
                   style={{
                     color: theme.textMain,
                     fontSize: 15, fontWeight: '500', lineHeight: 22,
@@ -2979,6 +2962,9 @@ export default function ChallengesScreen() {
   // the detail view.
   const [addEditOpen, setAddEditOpen] = useState(false);
   const presetsSheetRef = useRef<BottomSheetModal>(null);
+  // True while the "one active preset at a time" rule blocks a new pick — raises the
+  // warning overlay, from any entry point (add sheet, + long-press, empty-state CTA).
+  const [presetLimitWarning, setPresetLimitWarning] = useState(false);
   const storageSheetRef = useRef<BottomSheetModal>(null);
   // Close the storage when leaving this tab — a sheet shouldn't linger open across
   // a tab switch. useFocusEffect's cleanup runs on blur.
@@ -3007,7 +2993,7 @@ export default function ChallengesScreen() {
   // the edit sheet only lets the user remove entries via the × icon.
   const [noteEntries, setNoteEntries] = useState<NoteEntry[]>([]);
   const [urgencyStyle, setUrgencyStyle] = useState<UrgencyStyle>('auto'); const [reward, setReward] = useState(''); const [punishment, setPunishment] = useState('');
-  const [milestones, setMilestones] = useState<Milestone[]>([]); const [newMs, setNewMs] = useState(''); const [color, setColor] = useState(COLORS[0]); const [icon, setIcon] = useState<keyof typeof Feather.glyphMap>('target');
+  const [milestones, setMilestones] = useState<Milestone[]>([]); const [newMs, setNewMs] = useState(''); const [color, setColor] = useState(CHALLENGE_DEFAULT); const [icon, setIcon] = useState<keyof typeof Feather.glyphMap>('target');
   // Custom-amount logger — opened by long-pressing the inline +1 LOG
   // button on a card's expanded view. "Hidden power" pattern: tap
   // logs +1, hold to log a bulk amount. Visibility is derived from
@@ -3171,7 +3157,7 @@ export default function ChallengesScreen() {
       setEditingChallenge(null); setTitle(''); setTargetV(''); setUnit('');
       setDescription('');
       setNoteEntries([]);
-      setDeadlineTs(undefined); setUrgencyStyle('auto'); setReward(''); setPunishment(''); setMilestones([]); setNewMs(''); setColor(COLORS[0]); setIcon('target'); setCalOpen(false);
+      setDeadlineTs(undefined); setUrgencyStyle('auto'); setReward(''); setPunishment(''); setMilestones([]); setNewMs(''); setColor(CHALLENGE_DEFAULT); setIcon('target'); setCalOpen(false);
       setCapsuleEnabled(false); setCapsuleMessage('');
     }
     setAddEditOpen(true);
@@ -3224,17 +3210,31 @@ export default function ChallengesScreen() {
     () => (challenges as Challenge[]).some(c => !!c.presetId && (c.deadState === 'active' || c.deadState === 'resurrected')),
     [challenges]
   );
-  // The blocked-state is now communicated via the in-list dashed row
-  // ("Preset slot occupied · finish or bury current"), so a tap on
-  // any stale entry-point just no-ops with a warning haptic — the
-  // user already sees the status and doesn't need a modal interrupt.
+  // One-at-a-time is enforced here: if a preset is already running, every entry point
+  // (+ long-press, empty-state CTA, the "Start from a preset" row in the add sheet)
+  // raises a warning overlay that names the rule, instead of silently no-opping.
   const handleOpenPresets = useCallback(() => {
     if (hasActivePreset) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      setPresetLimitWarning(true);
       return;
     }
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     presetsSheetRef.current?.present();
+  }, [hasActivePreset]);
+  // Invoked from inside the add sheet. The picker is a gorhom bottom sheet (it lives in
+  // the JS-root portal), so it can't render above the fullScreen add Modal — dismiss that
+  // first, then present once it's gone. When blocked we leave the add sheet open; the
+  // warning overlay is a Modal, so it stacks above it.
+  const openPresetsFromAdd = useCallback(() => {
+    if (hasActivePreset) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      setPresetLimitWarning(true);
+      return;
+    }
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setAddEditOpen(false);
+    setTimeout(() => presetsSheetRef.current?.present(), 320);
   }, [hasActivePreset]);
   const handleOpenAddSheet = useCallback(() => {
     openAddEditSheet();
@@ -3701,7 +3701,10 @@ export default function ChallengesScreen() {
               BottomSheetModal rendered in a portal that ended up
               behind the detail view. */}
           <Modal visible={addEditOpen} animationType="slide" presentationStyle="fullScreen" onRequestClose={() => setAddEditOpen(false)}>
-            <View style={{ flex: 1, backgroundColor: theme.bg }}>
+            {/* surface body + theme.bg inset cards — matches the Notes & Tasks editors.
+                Was theme.bg, which read a shade darker than both (the convention is
+                surface for an editor surface, bg for the recessed page behind it). */}
+            <View style={{ flex: 1, backgroundColor: theme.surface }}>
               <SafeAreaView style={{ flex: 1 }} edges={['top']}>
                 <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} />
                 {/* Header — chevron-back on left, Save pill on right.
@@ -3730,6 +3733,25 @@ export default function ChallengesScreen() {
                     keyboardShouldPersistTaps="handled"
                     keyboardDismissMode="on-drag"
                   >
+              {/* Start-from-a-preset — only when creating. Closes this sheet and opens
+                  the picker (or warns if a preset is already running). Editing an
+                  existing challenge has no use for it. */}
+              {!editingChallenge ? (
+                <TouchableOpacity
+                  onPress={openPresetsFromAdd}
+                  activeOpacity={0.85}
+                  style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 14, borderWidth: 1, borderColor: theme.border, backgroundColor: theme.bg, marginBottom: 24 }}
+                >
+                  <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: hexToRgba(theme.textMain, 0.06), alignItems: 'center', justifyContent: 'center' }}>
+                    <Feather name="grid" size={16} color={theme.textMain} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ color: theme.textMain, fontSize: 14, fontWeight: '800' }}>Start from a preset</Text>
+                    <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '500', marginTop: 2 }}>Curated and ready — one preset at a time.</Text>
+                  </View>
+                  <Feather name="chevron-right" size={18} color={theme.textSub} />
+                </TouchableOpacity>
+              ) : null}
               <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 1.5, marginBottom: 12 }}>WHAT IS IT</Text>
               <TextInput
                 style={[
@@ -3741,17 +3763,17 @@ export default function ChallengesScreen() {
                   },
                 ]}
                 placeholder="Name your challenge"
-                placeholderTextColor={theme.border}
+                placeholderTextColor={theme.isDark ? theme.textSub : theme.border}
                 value={title}
                 onChangeText={setTitle}
               />
 
               <View style={{ flexDirection: 'row', gap: 12, marginBottom: 24 }}>
-                <TextInput style={[styles.inputSub, { color: theme.textMain, flex: 1 }]} placeholder="Target (e.g. 100)" placeholderTextColor={theme.border} value={targetV} onChangeText={setTargetV} keyboardType="numeric" />
+                <TextInput style={[styles.inputSub, { color: theme.textMain, flex: 1 }]} placeholder="Target (e.g. 100)" placeholderTextColor={theme.isDark ? theme.textSub : theme.border} value={targetV} onChangeText={setTargetV} keyboardType="numeric" />
                 <TextInput
                   style={[styles.inputSub, { color: theme.textMain, flex: 1, textAlign: isRtl(unit) ? 'right' : 'left', writingDirection: isRtl(unit) ? 'rtl' : 'ltr' }]}
                   placeholder="Unit (e.g. Hours)"
-                  placeholderTextColor={theme.border}
+                  placeholderTextColor={theme.isDark ? theme.textSub : theme.border}
                   value={unit}
                   onChangeText={setUnit}
                 />
@@ -3779,7 +3801,7 @@ export default function ChallengesScreen() {
                   writingDirection: isRtl(description) ? 'rtl' : 'ltr',
                 }}
                 placeholder="What is this challenge about?"
-                placeholderTextColor={theme.border}
+                placeholderTextColor={theme.isDark ? theme.textSub : theme.border}
                 value={description}
                 onChangeText={setDescription}
                 multiline
@@ -3899,11 +3921,11 @@ export default function ChallengesScreen() {
               <View style={{ flexDirection: 'row', gap: 12, marginBottom: 24 }}>
                 <TextInput
                   style={[styles.inputSub, { color: theme.textMain, flex: 1, textAlign: isRtl(reward) ? 'right' : 'left', writingDirection: isRtl(reward) ? 'rtl' : 'ltr' }]}
-                  placeholder="Reward" placeholderTextColor={theme.border} value={reward} onChangeText={setReward}
+                  placeholder="Reward" placeholderTextColor={theme.isDark ? theme.textSub : theme.border} value={reward} onChangeText={setReward}
                 />
                 <TextInput
                   style={[styles.inputSub, { color: theme.textMain, flex: 1, textAlign: isRtl(punishment) ? 'right' : 'left', writingDirection: isRtl(punishment) ? 'rtl' : 'ltr' }]}
-                  placeholder="Consequence" placeholderTextColor={theme.border} value={punishment} onChangeText={setPunishment}
+                  placeholder="Consequence" placeholderTextColor={theme.isDark ? theme.textSub : theme.border} value={punishment} onChangeText={setPunishment}
                 />
               </View>
 
@@ -3953,7 +3975,7 @@ export default function ChallengesScreen() {
               <View style={{ flexDirection: 'row', gap: 8, marginBottom: 24 }}>
                 <TextInput
                   style={[styles.inputSub, { color: theme.textMain, flex: 1, textAlign: isRtl(newMs) ? 'right' : 'left', writingDirection: isRtl(newMs) ? 'rtl' : 'ltr' }]}
-                  placeholder="Add milestone..." placeholderTextColor={theme.border}
+                  placeholder="Add milestone..." placeholderTextColor={theme.isDark ? theme.textSub : theme.border}
                   value={newMs} onChangeText={setNewMs} onSubmitEditing={addMs} returnKeyType="done"
                 />
                 <TouchableOpacity onPress={addMs} style={{ backgroundColor: theme.textMain, borderRadius: 10, paddingHorizontal: 14, justifyContent: 'center' }}><Feather name="plus" size={16} color={theme.bg} /></TouchableOpacity>
@@ -3986,7 +4008,7 @@ export default function ChallengesScreen() {
                       <TextInput
                         style={[styles.inputSub, { color: theme.textMain, minHeight: 96, textAlignVertical: 'top', fontStyle: 'normal' }]}
                         placeholder="What do you want to read at the finish?"
-                        placeholderTextColor={theme.border}
+                        placeholderTextColor={theme.isDark ? theme.textSub : theme.border}
                         value={capsuleMessage}
                         onChangeText={setCapsuleMessage}
                         multiline
@@ -3997,40 +4019,8 @@ export default function ChallengesScreen() {
               )}
 
               <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 1.5, marginBottom: 12, marginTop: 8 }}>AESTHETICS</Text>
-              {/* Color picker — wrap grid at 34px to match the swatch
-                  size used in Habits and Tasks. Wraps naturally based
-                  on container width so the row count adapts to the
-                  device, and the dots stay small enough to feel like
-                  picker chrome rather than buttons. */}
-              {/* 22px circles in two explicit rows of 9, using
-                  justify-content: space-between so the swatches column-
-                  align between rows regardless of device width. The
-                  wrap-with-gap pattern was overflowing on narrower
-                  devices and pushing into a third row. */}
-              {[COLORS.slice(0, 9), COLORS.slice(9, 18)].map((row, ri) => (
-                <View
-                  key={ri}
-                  style={{
-                    flexDirection: 'row',
-                    justifyContent: 'space-between',
-                    marginBottom: ri === 0 ? 10 : 16,
-                  }}
-                >
-                  {row.map(c => (
-                    <TouchableOpacity
-                      key={c}
-                      onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setColor(c); }}
-                      style={{
-                        width: 22, height: 22, borderRadius: 11,
-                        backgroundColor: c,
-                        borderWidth: color === c ? 2 : 0,
-                        borderColor: theme.textMain,
-                        transform: [{ scale: color === c ? 1.15 : 1 }],
-                      }}
-                    />
-                  ))}
-                </View>
-              ))}
+              {/* Color picker — shared component (components/ColorPicker), premium palette. */}
+              <ColorPicker colors={CHALLENGE_PALETTE} value={color} onChange={setColor} ringColor={theme.textMain} borderColor={theme.border} style={{ marginBottom: 16 }} />
               {/* Icon picker — horizontal scroll. Uses the gesture-handler-
                   aware ScrollView so the inner horizontal pan doesn't
                   fight the bottom sheet's vertical pan handler. */}
@@ -4221,6 +4211,20 @@ export default function ChallengesScreen() {
           <SoftDeleteOverlay visible={softDeleteMode === 'trash'} title={softDeleteTarget?.title || ''} subtitle="You're sure?" confirmLabel="GONE." cancelLabel="Not yet." onConfirm={confirmTrash} onCancel={() => { setSoftDeleteTarget(null); setSoftDeleteMode(null); }} theme={theme} />
           <SoftDeleteOverlay visible={softDeleteMode === 'forever'} title={softDeleteTarget?.title || ''} subtitle={"This cannot be undone.\nThis challenge will not be remembered."} confirmLabel="ERASE IT." cancelLabel="KEEP IT." onConfirm={confirmDeleteForever} onCancel={() => { setSoftDeleteTarget(null); setSoftDeleteMode(null); }} theme={theme} />
           <SoftDeleteOverlay visible={purgeAllVisible} title="Purge all trash" subtitle={"Every challenge in the trash will be erased.\nThis cannot be undone."} confirmLabel="PURGE ALL." cancelLabel="KEEP THEM." onConfirm={confirmPurgeAll} onCancel={() => setPurgeAllVisible(false)} theme={theme} />
+          {/* One-preset-at-a-time warning — raised from any entry point that tries to open
+              the picker while a preset is already running. A Modal (not a zIndex overlay)
+              so it stacks above the add sheet, which the gorhom picker itself can't. */}
+          <Modal visible={presetLimitWarning} transparent animationType="fade" statusBarTranslucent onRequestClose={() => setPresetLimitWarning(false)}>
+            <View style={{ flex: 1, backgroundColor: theme.isDark ? 'rgba(0,0,0,0.93)' : 'rgba(255,255,255,0.94)', justifyContent: 'center', alignItems: 'center', padding: 44 }}>
+              <StatusBar barStyle={theme.isDark ? 'light-content' : 'dark-content'} />
+              <Text style={{ fontSize: 10, fontWeight: '900', letterSpacing: 2, color: theme.textSub, marginBottom: 22 }}>ONE AT A TIME</Text>
+              <Text style={{ fontSize: 19, fontWeight: '800', color: theme.textMain, textAlign: 'center', letterSpacing: -0.3, marginBottom: 10 }}>You already have a preset going.</Text>
+              <Text style={{ fontSize: 13, color: theme.textSub, fontWeight: '500', textAlign: 'center', lineHeight: 20, marginBottom: 34 }}>Finish it or drop it before taking another. Your own challenges have no limit.</Text>
+              <TouchableOpacity onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setPresetLimitWarning(false); }} style={{ paddingHorizontal: 34, paddingVertical: 14, borderWidth: 1, borderColor: theme.border, borderRadius: 12 }}>
+                <Text style={{ color: theme.textMain, fontSize: 13, fontWeight: '800', letterSpacing: 1 }}>GOT IT</Text>
+              </TouchableOpacity>
+            </View>
+          </Modal>
 
           {/* The "preset slot occupied" status now lives passively in
               the active list (top dashed row), so this overlay was
@@ -4255,7 +4259,7 @@ export default function ChallengesScreen() {
                     onChangeText={v => setCustomLogValue(v.replace(/[^0-9]/g, ''))}
                     keyboardType="numeric"
                     placeholder="0"
-                    placeholderTextColor={theme.border}
+                    placeholderTextColor={theme.isDark ? theme.textSub : theme.border}
                   />
                   <View style={{ flexDirection: 'row', gap: 10, marginBottom: 14 }}>
                     <TouchableOpacity

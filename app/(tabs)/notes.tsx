@@ -39,6 +39,8 @@ import { GestureHandlerRootView, Swipeable } from "react-native-gesture-handler"
 import ImageViewer from "react-native-image-zoom-viewer";
 import Animated, { FadeInDown, FadeIn } from "react-native-reanimated";
 import { KeyboardAwareScrollView, KeyboardProvider } from "react-native-keyboard-controller";
+import { PALETTE, DEFAULT_COLOR } from "../../lib/palette";
+import { ColorPicker } from "../../components/ColorPicker";
 import { FEATURE_IDS, useIsUnlocked, useDaysSinceInstall } from "../../lib/unlocks";
 
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
@@ -50,7 +52,7 @@ if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental
   try { UIManager.setLayoutAnimationEnabledExperimental(true); } catch (e) {}
 }
 
-const COLORS = ["#F43F5E", "#3B82F6", "#10B981", "#F59E0B", "#8B5CF6", "#2DD4BF", "#EC4899", "#64748B"];
+// Note color palette now lives in lib/palette.ts (single source of truth).
 const artAccent = "#8B5CF6";
 
 function hexToRgba(hex: string, alpha: number): string {
@@ -698,7 +700,7 @@ export default function NotesScreen() {
   const [noteTitle, setNoteTitle] = useState("");
   const [noteGroup, setNoteGroup] = useState("");
   const [noteText, setNoteText] = useState("");
-  const [noteColor, setNoteColor] = useState(COLORS[1]);
+  const [noteColor, setNoteColor] = useState(DEFAULT_COLOR);
   const [showColors, setShowColors] = useState(false);
   // Mirror of showColors for the highlight tool — a small palette pops up
   // beneath the toolbar when the H button is tapped, lets the user pick
@@ -1240,7 +1242,7 @@ export default function NotesScreen() {
           setNoteTitle("");
         }
         setNoteGroup(newAsDiary ? "" : (activeFilter.startsWith("$SYS_") ? "" : activeFilter));
-        setNoteText(""); setNoteColor(COLORS[1]); setEditorImageUris([]); setEditorAudio([]);
+        setNoteText(""); setNoteColor(DEFAULT_COLOR); setEditorImageUris([]); setEditorAudio([]);
       }
       setMediaCollapsed(false);
       // Defensive: closeEditor already resets this, but mirroring on open
@@ -1341,7 +1343,7 @@ export default function NotesScreen() {
   };
 
   const toggleColors = () => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut); setShowColors(!showColors); setShowHighlightColors(false); };
-  const selectColor = (c: string) => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); setNoteColor(c); LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut); setShowColors(false); };
+  const selectColor = (c: string) => { setNoteColor(c); LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut); setShowColors(false); };
 
   const toggleHighlightColors = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -1920,11 +1922,7 @@ export default function NotesScreen() {
                       </TouchableOpacity>
                     </ScrollView>
                     {showColors && (
-                      <View style={{ flexDirection: "row", gap: 12, marginTop: 12, paddingTop: 12, marginHorizontal: 24, borderTopWidth: 1, borderTopColor: theme.border }}>
-                        {COLORS.map((c) => (
-                          <TouchableOpacity key={c} onPress={() => selectColor(c)} style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: c, borderWidth: noteColor === c ? 3 : 0, borderColor: theme.textMain, transform: [{ scale: noteColor === c ? 1.1 : 1 }] }} />
-                        ))}
-                      </View>
+                      <ColorPicker colors={PALETTE} value={noteColor} onChange={selectColor} ringColor={theme.textMain} borderColor={theme.border} style={{ marginTop: 12, paddingTop: 12, marginHorizontal: 24, borderTopWidth: 1, borderTopColor: theme.border }} />
                     )}
                     {showHighlightColors && (
                       <View style={{ flexDirection: "row", gap: 10, marginTop: 12, paddingTop: 12, marginHorizontal: 24, borderTopWidth: 1, borderTopColor: theme.border, alignItems: 'center' }}>
@@ -1949,8 +1947,8 @@ export default function NotesScreen() {
                   style={{ flex: 1 }} keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled">
                   {/* Title + Category */}
                   <View style={{ paddingHorizontal: 24, paddingTop: 20, paddingBottom: 8 }}>
-                    <TextInput style={[s.titleInput, { color: theme.textMain }, persianSafeInputStyle, rtlInputStyle(lineDirectionText(noteTitle))]} placeholder="Untitled Thought" placeholderTextColor={theme.border} value={noteTitle} onChangeText={setNoteTitle} onFocus={() => { if (editorImageUris.length > 0 || editorAudio.length > 0) setMediaCollapsed(true); }} />
-                    <TextInput style={[s.catInput, { color: theme.textSub }, persianSafeInputStyle, rtlInputStyle(lineDirectionText(noteGroup))]} placeholder="Add to a category..." placeholderTextColor={theme.border} value={noteGroup} onChangeText={setNoteGroup} />
+                    <TextInput style={[s.titleInput, { color: theme.textMain }, persianSafeInputStyle, rtlInputStyle(lineDirectionText(noteTitle))]} placeholder="Untitled Thought" placeholderTextColor={theme.textSub} value={noteTitle} onChangeText={setNoteTitle} onFocus={() => { if (editorImageUris.length > 0 || editorAudio.length > 0) setMediaCollapsed(true); }} />
+                    <TextInput style={[s.catInput, { color: theme.textSub }, persianSafeInputStyle, rtlInputStyle(lineDirectionText(noteGroup))]} placeholder="Add to a category..." placeholderTextColor={theme.textSub} value={noteGroup} onChangeText={setNoteGroup} />
                   </View>
 
                   {/* Media section (collapsible) */}
@@ -2051,7 +2049,7 @@ export default function NotesScreen() {
                     // editor the note shows up as expected.
                     style={[s.bodyInput, { color: theme.textMain, minHeight: 320 }, persianSafeInputStyle]}
                     multiline value={noteText} onChangeText={setNoteText}
-                    placeholder="Start typing..." placeholderTextColor={theme.border}
+                    placeholder="Start typing..." placeholderTextColor={theme.textSub}
                     onSelectionChange={(e) => setSelection(e.nativeEvent.selection)}
                     onFocus={() => { if (editorImageUris.length > 0 || editorAudio.length > 0) setMediaCollapsed(true); }}
                     scrollEnabled={false}

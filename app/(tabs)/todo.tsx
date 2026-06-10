@@ -22,6 +22,8 @@ import { BottomSheetModal, BottomSheetModalProvider, BottomSheetBackdrop, Bottom
 import { useAppStore, Task, Project, SubTask, Priority, CalendarSystem, RecurType, UrgencyLevel, TaskStatus, ProjectStatus, DeepWorkIntent, DeepWorkSession, ActiveDeepWork, Challenge, Habit, DayRating, makeLedgerEntry } from '../../store/useAppStore';
 import { FEATURE_IDS, useIsUnlocked, useIsNew, isUnlocked } from '../../lib/unlocks';
 import { useTabBarMetrics } from '../../lib/tabBarMetrics';
+import { PALETTE, PROJECT_PALETTE, DEFAULT_COLOR, NEUTRAL_COLOR } from '../../lib/palette';
+import { ColorPicker } from '../../components/ColorPicker';
 
 LogBox.ignoreLogs(['setLayoutAnimationEnabledExperimental', 'SafeAreaView has been deprecated']);
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -37,12 +39,7 @@ Notifications.setNotificationHandler({
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
-const COLORS = [
-  // row 1 — originals
-  '#3B82F6', '#10B981', '#F59E0B', '#F43F5E', '#8B5CF6', '#2DD4BF', '#EC4899', '#64748B',
-  // row 2 — expansion
-  '#EF4444', '#F97316', '#EAB308', '#84CC16', '#06B6D4', '#6366F1', '#A855F7', '#92400E',
-];
+// Color palettes now live in lib/palette.ts (single source of truth).
 const REPEAT_OPTIONS = ['none', 'daily', 'weekly', 'monthly', 'custom'] as RecurType[];
 const JS_DAY_MAP: Record<number, string> = { 0: 'Sunday', 1: 'Monday', 2: 'Tuesday', 3: 'Wednesday', 4: 'Thursday', 5: 'Friday', 6: 'Saturday' };
 const JS_DAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -700,7 +697,7 @@ export default function TodoScreen() {
   const [adhdJustDone, setAdhdJustDone] = useState<string>('');
 
   // Task Form States
-  const [txt, setTxt] = useState(''); const [notes, setNotes] = useState(''); const [color, setColor] = useState(COLORS[0]);
+  const [txt, setTxt] = useState(''); const [notes, setNotes] = useState(''); const [color, setColor] = useState(DEFAULT_COLOR);
   const [priority, setPriority] = useState<Priority>('Medium'); const [projectId, setProjectId] = useState<string | undefined>(undefined);
   const [calOpen, setCalOpen] = useState(false); const [startDate, setStartDate] = useState(''); const [deadlineDate, setDeadlineDate] = useState(''); const [deadlineTime, setDeadlineTime] = useState('');
   const [dateTab, setDateTab] = useState<'start' | 'due'>('due');
@@ -718,7 +715,7 @@ export default function TodoScreen() {
   const [promised, setPromised] = useState<boolean>(false);
 
   // Project Form States
-  const [newProjName, setNewProjName] = useState(''); const [newProjColor, setNewProjColor] = useState(COLORS[0]);
+  const [newProjName, setNewProjName] = useState(''); const [newProjColor, setNewProjColor] = useState(DEFAULT_COLOR);
 
   // ─── PHOENIX & NOTIFICATIONS ───
   // getState() — no stale closure, `tasks` removed from deps
@@ -912,7 +909,7 @@ export default function TodoScreen() {
     if (quickTaskText === ' ') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       const now = Date.now();
-      const voidTask: Task = { id: now.toString(), text: ' ', notes: '', completed: false, createdAt: now, deadlineDate: '', deadlineTime: '', hasReminder: false, priority: 'Low', color: COLORS[7], subTasks: [], hasProgress: false, progress: 0, recurType: 'none', lastTouchedAt: now };
+      const voidTask: Task = { id: now.toString(), text: ' ', notes: '', completed: false, createdAt: now, deadlineDate: '', deadlineTime: '', hasReminder: false, priority: 'Low', color: NEUTRAL_COLOR, subTasks: [], hasProgress: false, progress: 0, recurType: 'none', lastTouchedAt: now };
       setTasks([...useAppStore.getState().tasks, voidTask]);
       // Void still counts toward the unlock counter — it's a real (if weird)
       // task creation, and excluding it would be a side channel.
@@ -926,7 +923,7 @@ export default function TodoScreen() {
     const currentTasks = useAppStore.getState().tasks;
     const seen = useAppStore.getState().whispersSeen || {};
     const fireFirstTask = currentTasks.length === 0 && !seen['first_task'];
-    const newT: Task = { id: now.toString(), text: quickTaskText.trim(), notes: '', completed: false, createdAt: now, deadlineDate: '', deadlineTime: '', hasReminder: false, priority: 'Medium', color: COLORS[1], subTasks: [], hasProgress: false, progress: 0, recurType: 'none', lastTouchedAt: now };
+    const newT: Task = { id: now.toString(), text: quickTaskText.trim(), notes: '', completed: false, createdAt: now, deadlineDate: '', deadlineTime: '', hasReminder: false, priority: 'Medium', color: DEFAULT_COLOR, subTasks: [], hasProgress: false, progress: 0, recurType: 'none', lastTouchedAt: now };
     setTasks([...currentTasks, newT]);
     // Monotonic counter — feeds the SUBTASKS / RECURRING / PROJECTS triggers.
     useAppStore.getState().incrementTotalTasksCreated();
@@ -942,7 +939,7 @@ export default function TodoScreen() {
     if (txt === ' ' && !editingTask) {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       const now = Date.now();
-      const voidTask: Task = { id: now.toString(), text: ' ', notes: '', completed: false, createdAt: now, deadlineDate: '', deadlineTime: '', hasReminder: false, priority: 'Low', color: COLORS[7], subTasks: [], hasProgress: false, progress: 0, recurType: 'none', lastTouchedAt: now };
+      const voidTask: Task = { id: now.toString(), text: ' ', notes: '', completed: false, createdAt: now, deadlineDate: '', deadlineTime: '', hasReminder: false, priority: 'Low', color: NEUTRAL_COLOR, subTasks: [], hasProgress: false, progress: 0, recurType: 'none', lastTouchedAt: now };
       setTasks([...useAppStore.getState().tasks, voidTask]);
       useAppStore.getState().incrementTotalTasksCreated();
       setTaskModalVisible(false);
@@ -1228,7 +1225,7 @@ export default function TodoScreen() {
       setRecurType(task.recurType || 'none'); setRecurDays(task.recurDays || []); setRecurDayOfMonth(task.recurDayOfMonth); setSubTasks(task.subTasks || []);
       setPromised(!!task.promised);
     } else {
-      setEditingTask(null); setTxt(''); setNotes(''); setColor(COLORS[0]); setPriority('Medium'); setProjectId(projectForNew ?? undefined);
+      setEditingTask(null); setTxt(''); setNotes(''); setColor(DEFAULT_COLOR); setPriority('Medium'); setProjectId(projectForNew ?? undefined);
       setStartDate(''); setDeadlineDate(''); setDeadlineTime(''); setCalOpen(false); setDateTab('due'); setHasReminder(false); setReminderTime(''); setReminderOffsetDays(0);
       setRecurType('none'); setRecurDays([]); setRecurDayOfMonth(undefined); setSubTasks([]); setNewSubTxt('');
       setPromised(false);
@@ -2102,7 +2099,7 @@ export default function TodoScreen() {
                   <TouchableOpacity onPress={() => {
                     setEditingProjectId(null);
                     setNewProjName('');
-                    setNewProjColor(COLORS[0]);
+                    setNewProjColor(DEFAULT_COLOR);
                     projectModalRef.current?.present();
                   }} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
                     <Feather name="folder-plus" size={20} color={theme.textMain} />
@@ -2223,7 +2220,7 @@ export default function TodoScreen() {
               keyboardBlurBehavior="restore"
               android_keyboardInputMode="adjustPan"
               onChange={setSheetIndex}
-              onDismiss={() => { setNewProjName(''); setNewProjColor(COLORS[0]); setEditingProjectId(null); }}
+              onDismiss={() => { setNewProjName(''); setNewProjColor(DEFAULT_COLOR); setEditingProjectId(null); }}
               backdropComponent={renderBackdrop}
               backgroundStyle={{ backgroundColor: theme.bg, borderRadius: 32 }}
               handleIndicatorStyle={{ backgroundColor: theme.border, width: 40, height: 5 }}
@@ -2252,20 +2249,7 @@ export default function TodoScreen() {
                 <Text style={{ color: theme.textSub, fontSize: 9, fontWeight: '900', letterSpacing: 1.3, marginBottom: 8 }}>NAME</Text>
                 <BottomSheetTextInput style={[{ backgroundColor: theme.surface, color: theme.textMain, paddingHorizontal: 14, paddingVertical: 12, borderRadius: 12, fontSize: 15, fontWeight: '700', marginBottom: 20, borderWidth: 1, borderColor: theme.border }, persianSafeInputStyle, rtlInputStyle(newProjName)]} placeholder="Project name..." placeholderTextColor={theme.textSub} value={newProjName} onChangeText={setNewProjName} />
                 <Text style={{ color: theme.textSub, fontSize: 9, fontWeight: '900', letterSpacing: 1.3, marginBottom: 10 }}>COLOR</Text>
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 }}>
-                  {COLORS.slice(0, 8).map(c => (
-                    <TouchableOpacity key={c} onPress={() => setNewProjColor(c)} style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: c, alignItems: 'center', justifyContent: 'center' }}>
-                      {newProjColor === c ? <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: '#FFF' }} /> : null}
-                    </TouchableOpacity>
-                  ))}
-                </View>
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                  {COLORS.slice(8, 16).map(c => (
-                    <TouchableOpacity key={c} onPress={() => setNewProjColor(c)} style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: c, alignItems: 'center', justifyContent: 'center' }}>
-                      {newProjColor === c ? <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: '#FFF' }} /> : null}
-                    </TouchableOpacity>
-                  ))}
-                </View>
+                <ColorPicker colors={PROJECT_PALETTE} value={newProjColor} onChange={setNewProjColor} rows={1} ringColor={theme.textMain} borderColor={theme.border} />
               </View>
             </BottomSheetModal>
 
@@ -2312,22 +2296,7 @@ export default function TodoScreen() {
                 </View>
 
                 <Text style={{ color: theme.textSub, fontSize: 9, fontWeight: '900', letterSpacing: 1.3, marginBottom: 8 }}>COLOR</Text>
-                <View style={{ marginBottom: 14 }}>
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 }}>
-                    {COLORS.slice(0, 8).map(c => (
-                      <TouchableOpacity key={c} onPress={() => setColor(c)} style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: c, alignItems: 'center', justifyContent: 'center' }}>
-                        {color === c ? <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: '#FFF' }} /> : null}
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                    {COLORS.slice(8, 16).map(c => (
-                      <TouchableOpacity key={c} onPress={() => setColor(c)} style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: c, alignItems: 'center', justifyContent: 'center' }}>
-                        {color === c ? <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: '#FFF' }} /> : null}
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                </View>
+                <ColorPicker colors={PALETTE} value={color} onChange={setColor} ringColor={theme.textMain} borderColor={theme.border} style={{ marginBottom: 14 }} />
 
                 {/* PROJECT picker — gated on the PROJECTS unlock (8 total
                     tasks). Hides if no projects exist yet (user creates one
@@ -2925,7 +2894,7 @@ export default function TodoScreen() {
                         value={dwFreeLabel}
                         onChangeText={setDwFreeLabel}
                         placeholder="What are you focusing on? (optional)"
-                        placeholderTextColor={theme.border}
+                        placeholderTextColor={theme.textSub}
                         style={{ backgroundColor: isDarkMode ? '#111' : theme.bg, color: theme.textMain, padding: 14, borderRadius: 12, fontSize: 15, fontWeight: '600' }}
                       />
                     </View>
@@ -2994,7 +2963,7 @@ export default function TodoScreen() {
                       value={dwCustomMin}
                       onChangeText={t => { setDwOpenMode(false); setDwCustomMin(t.replace(/[^0-9]/g, '').slice(0, 3)); }}
                       placeholder="min"
-                      placeholderTextColor={theme.border}
+                      placeholderTextColor={theme.textSub}
                       keyboardType="number-pad"
                       editable={!dwOpenMode}
                       style={{ flex: 1, backgroundColor: isDarkMode ? '#111' : theme.bg, color: theme.textMain, padding: 10, borderRadius: 10, fontSize: 13, fontWeight: '700', textAlign: 'center', borderWidth: 1, borderColor: dwCustomMin && !dwOpenMode ? theme.textMain : 'transparent', opacity: dwOpenMode ? 0.4 : 1 }}
@@ -3158,7 +3127,7 @@ export default function TodoScreen() {
                   value={dwReflectionText}
                   onChangeText={setDwReflectionText}
                   placeholder="Anything worth remembering?"
-                  placeholderTextColor={theme.border}
+                  placeholderTextColor={theme.textSub}
                   multiline
                   style={{ backgroundColor: isDarkMode ? '#111' : theme.bg, color: theme.textMain, padding: 14, borderRadius: 12, minHeight: 64, fontSize: 14, fontWeight: '600', textAlignVertical: 'top', marginBottom: 22 }}
                 />

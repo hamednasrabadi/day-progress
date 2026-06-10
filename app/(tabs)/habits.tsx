@@ -18,13 +18,12 @@ import { useFocusEffect } from 'expo-router';
 import { FlashList } from '@shopify/flash-list';
 import { BottomSheetModal, BottomSheetModalProvider, BottomSheetBackdrop, BottomSheetScrollView } from '@gorhom/bottom-sheet';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
+import { PALETTE, DEFAULT_COLOR } from '../../lib/palette';
+import { ColorPicker } from '../../components/ColorPicker';
 import { useAppStore, Habit, HabitStatus, TimeBlock, Note } from '../../store/useAppStore';
 import { calculateStrengthScore, isHabitScheduledOn } from '../../lib/habitScore';
 import { FEATURE_IDS, useIsUnlocked, useIsNew } from '../../lib/unlocks';
-import {
-  Eclipse_Brutal, Eclipse_Horizon, Eclipse_NightSky,
-  pickEclipseVariation, EclipseVariationKey,
-} from '../../components/DayConqueredVariations';
+import { Eclipse_Horizon } from '../../components/DayConqueredVariations';
 
 const SCREEN_HEIGHT = Dimensions.get('window').height;
 
@@ -32,26 +31,7 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
   try { UIManager.setLayoutAnimationEnabledExperimental(true); } catch(e){}
 }
 
-const COLORS = [
-  // row 1 — originals
-  '#3B82F6', // blue
-  '#10B981', // emerald
-  '#F59E0B', // amber
-  '#F43F5E', // rose
-  '#8B5CF6', // violet
-  '#2DD4BF', // teal
-  '#EC4899', // pink
-  '#64748B', // slate
-  // row 2 — expansion
-  '#EF4444', // red — intense
-  '#F97316', // orange — warm
-  '#EAB308', // yellow — bright
-  '#84CC16', // lime — fresh
-  '#06B6D4', // cyan — cool
-  '#6366F1', // indigo — deep
-  '#A855F7', // fuchsia-purple
-  '#92400E', // bronze — earthy
-];
+// Color palettes now live in lib/palette.ts (single source of truth).
 // Ordered by expected usage frequency — most-used habits first
 const ICONS: (keyof typeof Feather.glyphMap)[] = [
   // tier 1 — the usual suspects (water, exercise, read, sleep, morning)
@@ -498,7 +478,7 @@ export default function HabitsScreen() {
   const endOfWeekDay = useAppStore(s => s.endOfWeekDay);
 
   // Active Day Conquered variation — null when nothing is showing
-  const [activeEclipse, setActiveEclipse] = useState<EclipseVariationKey | null>(null);
+  const [activeEclipse, setActiveEclipse] = useState(false);
 
   // Strength history modal
   const [showStrengthHistory, setShowStrengthHistory] = useState(false);
@@ -595,7 +575,7 @@ export default function HabitsScreen() {
   const [newTargetCount, setNewTargetCount] = useState('1');
   const [newUnit, setNewUnit] = useState('');
   const [newTimeBlock, setNewTimeBlock] = useState<TimeBlock>('morning');
-  const [newColor, setNewColor] = useState(COLORS[0]);
+  const [newColor, setNewColor] = useState(DEFAULT_COLOR);
   const [newIcon, setNewIcon] = useState<keyof typeof Feather.glyphMap>('activity');
   const [newScheduleType, setNewScheduleType] = useState<'days' | 'interval'>('days');
   const [newFrequency, setNewFrequency] = useState<string[]>(UI_DAYS);
@@ -1034,91 +1014,8 @@ export default function HabitsScreen() {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
       setTimeout(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Soft), 1000);
 
-      // Compute context for variation selection
-      const todayStr = getFormatDateStr();
-      const activeHabits = habits.filter(h => h.status === 'active');
-
-      // Helper: was a given date fully conquered?
-      const wasDayConquered = (checkStr: string, checkDate: Date) => {
-        const dayName = JS_DAYS[checkDate.getDay()];
-        const dayHabits = activeHabits.filter(h => {
-          if (new Date(h.createdAt) > checkDate) return false;
-          if (h.scheduleType === 'interval') {
-            if (!h.startDate) return false;
-            const diff = diffInDays(h.startDate, checkStr);
-            return diff >= 0 && diff % (h.intervalDays || 1) === 0;
-          }
-          return h.frequency.length === 0 || h.frequency.includes(dayName);
-        });
-        if (dayHabits.length === 0) return null; // no scheduled habits that day
-        return dayHabits.every(h => {
-          const c = h.history.filter(d => d === checkStr).length;
-          return h.skippedDays?.includes(checkStr) || h.restDays?.includes(checkStr) || c >= h.targetCount;
-        });
-      };
-
-      // Consecutive conquered days (walking backward, stop on first non-conquered)
-      let consecutiveConqueredDays = 1; // today
-      for (let back = 1; back < 30; back++) {
-        const checkDate = new Date();
-        checkDate.setDate(checkDate.getDate() - back);
-        const checkStr = getFormatDateStr(checkDate);
-        const res = wasDayConquered(checkStr, checkDate);
-        if (res === null) continue; // no scheduled habits — don't break, don't count
-        if (!res) break;
-        consecutiveConqueredDays++;
-      }
-
-      // Incomplete days in last 7 (any day that had scheduled habits but wasn't fully done)
-      let incompleteDaysLast7 = 0;
-      for (let back = 1; back <= 7; back++) {
-        const checkDate = new Date();
-        checkDate.setDate(checkDate.getDate() - back);
-        const checkStr = getFormatDateStr(checkDate);
-        const res = wasDayConquered(checkStr, checkDate);
-        if (res === false) incompleteDaysLast7++;
-      }
-
-      // Yesterday was rest-or-skip across all scheduled habits
-      const yesterday = new Date();
-      yesterday.setDate(yesterday.getDate() - 1);
-      const yStr = getFormatDateStr(yesterday);
-      const yDayName = JS_DAYS[yesterday.getDay()];
-      const ySched = activeHabits.filter(h => {
-        if (new Date(h.createdAt) > yesterday) return false;
-        if (h.scheduleType === 'interval') {
-          if (!h.startDate) return false;
-          const diff = diffInDays(h.startDate, yStr);
-          return diff >= 0 && diff % (h.intervalDays || 1) === 0;
-        }
-        return h.frequency.length === 0 || h.frequency.includes(yDayName);
-      });
-      const yesterdayWasRestOrSkip = ySched.length > 0 && ySched.every(h =>
-        h.restDays?.includes(yStr) || h.skippedDays?.includes(yStr)
-      );
-
-      // Pact completes today — heuristic
-      let completesPactToday = false;
-      if (pact && pact.habits) {
-        completesPactToday = pact.habits.every(ph => {
-          const h = habits.find(hb => hb.id === ph.id);
-          if (!h) return false;
-          const countPerDay: Record<string, number> = {};
-          h.history.filter(d => d >= pact.startedAt && d <= todayStr).forEach(d => { countPerDay[d] = (countPerDay[d] || 0) + 1; });
-          const daysCompleted = Object.values(countPerDay).filter(c => c >= h.targetCount).length;
-          return daysCompleted >= 2;
-        });
-      }
-
-      const pick = pickEclipseVariation({
-        hour: new Date().getHours(),
-        dayOfWeek: new Date().getDay(),
-        consecutiveConqueredDays,
-        incompleteDaysLast7,
-        yesterdayWasRestOrSkip,
-        completesPactToday,
-      });
-      setActiveEclipse(pick);
+      // Every scheduled habit is done — let the sun set on the day.
+      setActiveEclipse(true);
 
       // ── "Go for more" easter egg (experimental, flagged off) ──
       // Only rolls when the day is conquered BEFORE 4pm (hard), then a low
@@ -1537,11 +1434,9 @@ export default function HabitsScreen() {
         <SafeAreaView style={{ flex: 1 }} edges={['top']}>
           
           {/* DAY CONQUERED — context-aware variation. Rendered in a Modal so it covers the tab bar too. */}
-          <Modal visible={!!activeEclipse} transparent animationType="none" statusBarTranslucent onRequestClose={() => setActiveEclipse(null)}>
+          <Modal visible={activeEclipse} transparent animationType="none" statusBarTranslucent onRequestClose={() => setActiveEclipse(false)}>
             <View style={{ flex: 1 }} pointerEvents="none">
-              {activeEclipse === 'brutal' && <Eclipse_Brutal theme={theme} onDone={() => setActiveEclipse(null)} />}
-              {activeEclipse === 'horizon' && <Eclipse_Horizon theme={theme} onDone={() => setActiveEclipse(null)} />}
-              {activeEclipse === 'nightsky' && <Eclipse_NightSky theme={theme} onDone={() => setActiveEclipse(null)} />}
+              {activeEclipse && <Eclipse_Horizon theme={theme} onDone={() => setActiveEclipse(false)} />}
             </View>
           </Modal>
 
@@ -2212,9 +2107,9 @@ export default function HabitsScreen() {
             <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
               <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingTop: 16, paddingBottom: 60, paddingHorizontal: 24 }} keyboardShouldPersistTaps="handled">
               
-              <TextInput style={[{ fontSize: 28, fontWeight: '900', marginBottom: 12, color: theme.textMain }, persianSafeInputStyle]} placeholder="What's the habit?" placeholderTextColor={theme.border} value={newTitle} onChangeText={setNewTitle} />
+              <TextInput style={[{ fontSize: 28, fontWeight: '900', marginBottom: 12, color: theme.textMain }, persianSafeInputStyle]} placeholder="What's the habit?" placeholderTextColor={theme.textSub} value={newTitle} onChangeText={setNewTitle} />
 
-              <TextInput style={[{ fontSize: 15, fontWeight: '500', lineHeight: 22, marginBottom: 24, color: theme.textSub }, persianSafeInputStyle]} placeholder="Why it matters (optional)" placeholderTextColor={theme.border} value={newDescription} onChangeText={setNewDescription} multiline maxLength={200} />
+              <TextInput style={[{ fontSize: 15, fontWeight: '500', lineHeight: 22, marginBottom: 24, color: theme.textSub }, persianSafeInputStyle]} placeholder="Why it matters (optional)" placeholderTextColor={theme.textSub} value={newDescription} onChangeText={setNewDescription} multiline maxLength={200} />
 
               <View style={{flexDirection: 'row', gap: 15, marginBottom: 30}}>
                 <View style={{flex: 1}}>
@@ -2297,13 +2192,7 @@ export default function HabitsScreen() {
 
               <View style={{ marginBottom: 30 }}>
                 <Text style={{ fontSize: 11, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1, color: theme.textSub, marginBottom: 12 }}>Appearance</Text>
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 20 }}>
-                  {COLORS.map(c => (
-                    <Pressable key={c} onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setNewColor(c); }} style={{ width: 34, height: 34, borderRadius: 17, justifyContent: 'center', alignItems: 'center', backgroundColor: c }} >
-                      {newColor === c && <View style={{ width: 14, height: 14, borderRadius: 7, backgroundColor: '#FFF' }} />}
-                    </Pressable>
-                  ))}
-                </View>
+                <ColorPicker colors={PALETTE} value={newColor} onChange={setNewColor} ringColor={theme.textMain} borderColor={theme.border} style={{ marginBottom: 20 }} />
                 <GHScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 12 }}>
                   {ICONS.map(i => (
                     <Pressable key={i} onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setNewIcon(i); }} style={{ padding: 12, backgroundColor: newIcon === i ? theme.textMain : theme.bg, borderRadius: 14, borderWidth: 1, borderColor: newIcon === i ? theme.textMain : theme.border }}>
