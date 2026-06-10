@@ -735,7 +735,7 @@ const RosterCard = React.memo(({ challenge, theme, calSystem, index, hero, onBum
           <View style={{ paddingHorizontal: 18, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
             <View style={{ flex: 1, paddingRight: 12 }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, marginBottom: 4 }}>
-                <Text numberOfLines={1} style={{ color: theme.textMain, fontSize: 17, fontWeight: '800', letterSpacing: -0.3, flexShrink: 1, textAlign: titleRtl ? 'right' : 'left', writingDirection: titleRtl ? 'rtl' : 'ltr' }}>{c.title}</Text>
+                <Text numberOfLines={2} style={{ color: theme.textMain, fontSize: 17, fontWeight: '800', letterSpacing: -0.3, flex: 1, textAlign: titleRtl ? 'right' : 'left', writingDirection: titleRtl ? 'rtl' : 'ltr' }}>{c.title}</Text>
                 {resurrected ? (
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: hexToRgba(c.color, 0.18), paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 }}>
                     <Feather name="rotate-ccw" size={9} color={c.color} />
