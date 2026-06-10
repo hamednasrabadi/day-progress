@@ -480,6 +480,7 @@ const MIGRATIONS: Record<number, (p: any) => any> = {
     delete out.globalNotifsEnabled;
     delete out.preNotifOffset;
     delete out.ongoingBlockEnabled;
+    delete out.streakRemindersEnabled;
     delete out.endOfWeekDay;
     // Also strip any internal counters that may have leaked into older files
     // before they were excluded — defensive cleanup.

@@ -619,6 +619,10 @@ interface AppState {
   // Default on — visible proof the app knows what the user is doing right now.
   ongoingBlockEnabled: boolean;
   setOngoingBlockEnabled: (v: boolean) => void;
+  // Optional evening "before the sun sets" nudge for habits with a run still
+  // open. Default on; anyone who'd rather not be chased can turn it off.
+  streakRemindersEnabled: boolean;
+  setStreakRemindersEnabled: (v: boolean) => void;
   // How many times the user has revealed the week-nav chrome (pull-to-reveal OR horizontal swipe).
   // Once it crosses a threshold, the hint handle above the slider stops rendering — they clearly
   // know about the gesture, no need to occupy space with a permanent affordance.
@@ -1154,10 +1158,12 @@ export const useAppStore = create<AppState>()(
       globalNotifsEnabled: true,
       preNotifOffset: 5,
       ongoingBlockEnabled: true,
+      streakRemindersEnabled: true,
       navRevealCount: 0,
       setGlobalNotifsEnabled: (v) => set({ globalNotifsEnabled: v }),
       setPreNotifOffset: (v) => set({ preNotifOffset: v }),
       setOngoingBlockEnabled: (v) => set({ ongoingBlockEnabled: v }),
+      setStreakRemindersEnabled: (v) => set({ streakRemindersEnabled: v }),
       incrementNavRevealCount: () => set((s) => ({ navRevealCount: (s.navRevealCount ?? 0) + 1 })),
 
       // ── Progressive unlocks ──

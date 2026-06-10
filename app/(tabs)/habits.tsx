@@ -395,7 +395,6 @@ const HabitCard = React.memo(function HabitCard({ habit, selectedDateStr, todayC
             <Pressable onPressIn={handlePressIn} onPressOut={handlePressOut} onPress={handlePress} style={{ flex: 1 }}>
               <Text style={[{ fontSize: 16, fontWeight: '800' }, currentStatus !== 'pending' ? { textDecorationLine: 'line-through', color: theme.textSub } : { color: theme.textMain }]}>{habit.title}</Text>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
-                {currentStatus === 'skipped' && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: theme.danger + '20' }}><Text style={{ fontSize: 10, fontWeight: '800', color: theme.danger }}>STREAK BROKEN</Text></View>}
                 {currentStatus === 'rest' && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: theme.freeze + '20' }}><Text style={{ fontSize: 10, fontWeight: '800', color: theme.freeze }}>REST DAY</Text></View>}
                 {currentStatus === 'pending' && habit.targetCount > 1 && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: '#222' }}><Text style={{ fontSize: 10, fontWeight: '800', color: theme.textSub }}>{todayCount} / {habit.targetCount} {habit.unit}</Text></View>}
                 {strengthScore > 0 && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: hexToRgba(strengthScore >= 80 ? habit.color : strengthScore >= 50 ? theme.textSub : theme.danger, 0.15) }}><Text style={{ fontSize: 10, fontWeight: '900', color: strengthScore >= 80 ? habit.color : strengthScore >= 50 ? theme.textSub : theme.danger }}>{strengthScore}%</Text></View>}
@@ -666,16 +665,14 @@ export default function HabitsScreen() {
       // it never devolves into a wall of notifications. Skipped if 8 PM has
       // already passed today — re-runs throughout the day catch the user as
       // they complete habits and prune the at-risk list.
-      if (atRisk.length > 0) {
+      if (atRisk.length > 0 && useAppStore.getState().streakRemindersEnabled) {
         const target = new Date(); target.setHours(20, 0, 0, 0);
         if (target.getTime() > Date.now()) {
           const titles = atRisk.map(x => x.habit.title);
-          const title = atRisk.length === 1
-            ? `${titles[0]} streak at risk`
-            : `${atRisk.length} streaks at risk`;
+          const title = `Before the sun sets`;
           const body = atRisk.length === 1
-            ? `Don't break your ${atRisk[0].streak}-day streak — open Habits.`
-            : `Still pending: ${titles.slice(0, 3).join(', ')}${titles.length > 3 ? ` + ${titles.length - 3} more` : ''}.`;
+            ? `${titles[0]} is still open — keep your ${atRisk[0].streak}-day run going, if you like.`
+            : `Still open: ${titles.slice(0, 3).join(', ')}${titles.length > 3 ? ` + ${titles.length - 3} more` : ''}.`;
           await notifee.createTriggerNotification({
             id: `habit_streak_warn_${today.replace(/-/g, '')}`,
             title, body,

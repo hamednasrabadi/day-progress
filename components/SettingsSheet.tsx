@@ -44,6 +44,8 @@ export function SettingsSheet({
   const sovereignAwakened = useAppStore(s => s.sovereignAwakened);
   const endOfWeekDay      = useAppStore(s => s.endOfWeekDay);
   const setEndOfWeekDay   = useAppStore(s => s.setEndOfWeekDay);
+  const streakRemindersEnabled    = useAppStore(s => s.streakRemindersEnabled);
+  const setStreakRemindersEnabled = useAppStore(s => s.setStreakRemindersEnabled);
 
   const daysSinceInstall = useDaysSinceInstall();
 
@@ -130,6 +132,26 @@ export function SettingsSheet({
                   <Text style={{ color: endOfWeekDay === d ? theme.bg : theme.textSub, fontWeight: '800', fontSize: 12, textTransform: 'capitalize' }}>{d}</Text>
                 </TouchableOpacity>
               ))}
+            </View>
+
+            {/* EVENING REMINDER — the optional "before the sun sets" nudge for a
+                habit whose run is still open. Off for anyone who'd rather not be
+                chased by a streak. */}
+            <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 1.5, marginBottom: 6 }}>EVENING REMINDER</Text>
+            <Text style={{ color: theme.textSub, fontSize: 11, fontWeight: '500', marginBottom: 10 }}>A gentle nudge before the day ends if a habit run is still open.</Text>
+            <View style={{ flexDirection: 'row', gap: 8, marginBottom: 22 }}>
+              {([{ on: true, label: 'On' }, { on: false, label: 'Off' }] as const).map(opt => {
+                const active = streakRemindersEnabled === opt.on;
+                return (
+                  <TouchableOpacity
+                    key={opt.label}
+                    onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setStreakRemindersEnabled(opt.on); }}
+                    style={{ flex: 1, paddingVertical: 11, borderRadius: 10, backgroundColor: active ? theme.textMain : theme.bg, alignItems: 'center', borderWidth: 1, borderColor: active ? theme.textMain : theme.border }}
+                  >
+                    <Text style={{ color: active ? theme.bg : theme.textSub, fontWeight: '800', fontSize: 12 }}>{opt.label}</Text>
+                  </TouchableOpacity>
+                );
+              })}
             </View>
 
             {/* BACKUP — one-tap full export / import (the per-tab picker is gone). */}
