@@ -481,7 +481,6 @@ export default function HabitsScreen() {
 
   // Strength history modal
   const [showStrengthHistory, setShowStrengthHistory] = useState(false);
-  const sovereignAwakened = useAppStore(s => s.sovereignAwakened);
   // Sort order for the per-habit breakdown. Default ascending = weakest first,
   // so underperforming habits surface on their own (no nagging review needed).
   const [strengthSortAsc, setStrengthSortAsc] = useState(true);
@@ -1834,16 +1833,6 @@ export default function HabitsScreen() {
                           <Feather name="x" size={22} color={theme.textSub} />
                         </TouchableOpacity>
                       </View>
-
-                      {/* SOVEREIGN rank — the easter-egg badge, shown where the grade lives */}
-                      {sovereignAwakened && (
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: -8, marginBottom: 20 }}>
-                          <Feather name="hexagon" size={13} color="#A855F7" />
-                          <Text style={{ color: '#A855F7', fontSize: 12, fontWeight: '900', letterSpacing: 3, textShadowColor: 'rgba(168,85,247,0.5)', textShadowRadius: 10, textShadowOffset: { width: 0, height: 0 } }}>SOVEREIGN</Text>
-                          <View style={{ flex: 1 }} />
-                          <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '700', letterSpacing: 1 }}>RANK</Text>
-                        </View>
-                      )}
 
                       {/* Sparkline — vertical bars */}
                       <View style={{ flexDirection: 'row', alignItems: 'flex-end', height: 140, gap: 2, marginBottom: 10 }}>
