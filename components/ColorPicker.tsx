@@ -18,7 +18,7 @@
  * `onChange`, or the tap will buzz twice.
  */
 import React, { useState } from 'react';
-import { View, TouchableOpacity, ViewStyle, LayoutChangeEvent } from 'react-native';
+import { View, ScrollView, TouchableOpacity, ViewStyle, LayoutChangeEvent } from 'react-native';
 import * as Haptics from 'expo-haptics';
 
 type ColorPickerProps = {
@@ -33,14 +33,51 @@ type ColorPickerProps = {
   gap?: number;        // horizontal + vertical spacing, default 14
   minSize?: number;    // swatch clamp (small screens), default 28
   maxSize?: number;    // swatch clamp (large screens), default 46
+  // One fixed-size, horizontally-scrollable row instead of the responsive grid:
+  // no width measuring, so it paints at its final size with no open-jump. Used by Notes.
+  horizontal?: boolean;
   style?: ViewStyle;   // outer container style (margins, borders, etc.)
 };
 
 export function ColorPicker({
   colors, value, onChange, ringColor, borderColor,
-  rows = 2, gap = 14, minSize = 28, maxSize = 46, style,
+  rows = 2, gap = 14, minSize = 28, maxSize = 46, horizontal = false, style,
 }: ColorPickerProps) {
   const [width, setWidth] = useState(0);
+
+  // Notes exception: one fixed-size, horizontally-scrollable row. It paints at its
+  // final size on the first frame (no width measuring), so it never opens-then-resizes,
+  // and it stays a single compact row that scrolls to reach every swatch.
+  if (horizontal) {
+    return (
+      <View style={style}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={{ flexDirection: 'row', gap, alignItems: 'center', paddingVertical: 4, paddingHorizontal: 4 }}
+        >
+          {colors.map(c => {
+            const selected = value === c;
+            return (
+              <TouchableOpacity
+                key={c}
+                activeOpacity={0.8}
+                onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); onChange(c); }}
+                style={{
+                  width: maxSize, height: maxSize, borderRadius: maxSize / 2,
+                  backgroundColor: c,
+                  borderWidth: selected ? 2.5 : 0.5,
+                  borderColor: selected ? ringColor : borderColor,
+                  transform: [{ scale: selected ? 1.1 : 1 }],
+                }}
+              />
+            );
+          })}
+        </ScrollView>
+      </View>
+    );
+  }
+
   const perRow = Math.ceil(colors.length / rows);
   const chunks: string[][] = [];
   for (let i = 0; i < colors.length; i += perRow) chunks.push(colors.slice(i, i + perRow));

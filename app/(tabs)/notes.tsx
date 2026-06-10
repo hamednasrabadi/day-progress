@@ -1922,7 +1922,7 @@ export default function NotesScreen() {
                       </TouchableOpacity>
                     </ScrollView>
                     {showColors && (
-                      <ColorPicker colors={PALETTE} value={noteColor} onChange={selectColor} ringColor={theme.textMain} borderColor={theme.border} style={{ marginTop: 12, paddingTop: 12, marginHorizontal: 24, borderTopWidth: 1, borderTopColor: theme.border }} />
+                      <ColorPicker horizontal maxSize={40} colors={PALETTE} value={noteColor} onChange={selectColor} ringColor={theme.textMain} borderColor={theme.border} style={{ marginTop: 12, paddingTop: 12, marginHorizontal: 24, borderTopWidth: 1, borderTopColor: theme.border }} />
                     )}
                     {showHighlightColors && (
                       <View style={{ flexDirection: "row", gap: 10, marginTop: 12, paddingTop: 12, marginHorizontal: 24, borderTopWidth: 1, borderTopColor: theme.border, alignItems: 'center' }}>
