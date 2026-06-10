@@ -52,18 +52,7 @@
         "expo-notifications",
         {
           "sounds": [
-            "./assets/arcade.mp3",
-            "./assets/chime.mp3",
-            "./assets/chime2.mp3",
-            "./assets/pop.mp3",
-            "./assets/banjo.mp3",
-            "./assets/amongus.mp3",
-            "./assets/reminder2.mp3",
-            "./assets/musical2.mp3",
-            "./assets/musical.mp3",
-            "./assets/reminder.mp3",
-            "./assets/adventure.mp3",
-            "./assets/happy.mp3"
+            "./assets/pop.wav"
           ]
         }
       ],

@@ -23,6 +23,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { KeyboardAvoidingView, useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller';
 import { CHALLENGE_PALETTE, CHALLENGE_DEFAULT } from '../../lib/palette';
 import { ColorPicker } from '../../components/ColorPicker';
+import { playSfx } from '../../lib/sounds';
 import Reanimated, { useSharedValue, useAnimatedProps, useAnimatedStyle, withTiming, withDelay, withSequence, withSpring, withRepeat, cancelAnimation, interpolate, Easing as ReEasing, runOnJS, FadeIn, FadeInDown, FadeOut, LinearTransition } from 'react-native-reanimated';
 
 import { useAppStore, Task, Habit, CalendarSystem, Challenge, Achievement, AchievementId, Milestone, NoteEntry, DeadState, ChallengeUrgency, UrgencyStyle, NarratorTone, Note, ChallengeLink, LedgerEntry, LedgerSource, Stake, StakeKind, inferChallengeCadence, makeLedgerEntry } from '../../store/useAppStore';
@@ -3321,6 +3322,7 @@ export default function ChallengesScreen() {
 
     if (!was && next >= challenge.target) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      if (source === 'manual') playSfx('success');
       const currentAchs = useAppStore.getState().achievements as Achievement[];
       const isFirst = !currentAchs.some(a => a.id === 'first_blood' && a.unlockedAt);
       const wasRes = !!(challenge.wasResurrected || challenge.deadState === 'resurrected');
@@ -3345,6 +3347,7 @@ export default function ChallengesScreen() {
       setCompletionCeremony({ challenge: { ...challenge, current: next }, isFirst, wasResurrected: wasRes });
       if (achievementIds.length > 0) handleAchievementQueue(achievementIds);
     } else {
+      if (source === 'manual') playSfx('tap');
       const updated = checkDeadTransition({ ...challenge, current: next, lastLoggedAt: now, logDates: newLogDates, ledger: newLedger } as any);
       saveChallenges(currentChallenges.map(c => c.id === (updated as any).id ? updated : c));
 

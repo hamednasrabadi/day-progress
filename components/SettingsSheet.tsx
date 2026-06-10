@@ -27,6 +27,7 @@ import { useAppStore } from '../store/useAppStore';
 import { useDaysSinceInstall } from '../lib/unlocks';
 import { FeatureHunt } from './FeatureHunt';
 import { exportBackup, pickAndReadBackup, applyBackup, ALL_KEYS } from '../lib/backup';
+import { playSfx } from '../lib/sounds';
 
 export function SettingsSheet({
   visible, onClose, theme, insetsBottom,
@@ -46,6 +47,8 @@ export function SettingsSheet({
   const setEndOfWeekDay   = useAppStore(s => s.setEndOfWeekDay);
   const streakRemindersEnabled    = useAppStore(s => s.streakRemindersEnabled);
   const setStreakRemindersEnabled = useAppStore(s => s.setStreakRemindersEnabled);
+  const soundEnabled              = useAppStore(s => s.soundEnabled);
+  const setSoundEnabled           = useAppStore(s => s.setSoundEnabled);
 
   const daysSinceInstall = useDaysSinceInstall();
 
@@ -146,6 +149,26 @@ export function SettingsSheet({
                   <TouchableOpacity
                     key={opt.label}
                     onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setStreakRemindersEnabled(opt.on); }}
+                    style={{ flex: 1, paddingVertical: 11, borderRadius: 10, backgroundColor: active ? theme.textMain : theme.bg, alignItems: 'center', borderWidth: 1, borderColor: active ? theme.textMain : theme.border }}
+                  >
+                    <Text style={{ color: active ? theme.bg : theme.textSub, fontWeight: '800', fontSize: 12 }}>{opt.label}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            {/* SOUNDS — in-app effect blips (taps, completions, milestones).
+                Always respects the phone's silent switch; this is the app-wide
+                mute. Toggling On plays a sample so the choice is audible. */}
+            <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 1.5, marginBottom: 6 }}>SOUNDS</Text>
+            <Text style={{ color: theme.textSub, fontSize: 11, fontWeight: '500', marginBottom: 10 }}>Soft taps and chimes as you check things off. Respects your silent switch.</Text>
+            <View style={{ flexDirection: 'row', gap: 8, marginBottom: 22 }}>
+              {([{ on: true, label: 'On' }, { on: false, label: 'Off' }] as const).map(opt => {
+                const active = soundEnabled === opt.on;
+                return (
+                  <TouchableOpacity
+                    key={opt.label}
+                    onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setSoundEnabled(opt.on); if (opt.on) playSfx('check'); }}
                     style={{ flex: 1, paddingVertical: 11, borderRadius: 10, backgroundColor: active ? theme.textMain : theme.bg, alignItems: 'center', borderWidth: 1, borderColor: active ? theme.textMain : theme.border }}
                   >
                     <Text style={{ color: active ? theme.bg : theme.textSub, fontWeight: '800', fontSize: 12 }}>{opt.label}</Text>

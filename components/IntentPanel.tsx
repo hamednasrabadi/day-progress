@@ -33,6 +33,7 @@ import { hexToRgba } from '../lib/timelineTheme';
 import { rtlInputStyle, rtlTextStyle, persianSafeInputStyle } from '../lib/rtl';
 import { useAppStore } from '../store/useAppStore';
 import { IntentComposer } from './IntentComposer';
+import { playSfx } from '../lib/sounds';
 
 // Matches the Timeline original — intent labels stay short and directive.
 const INTENT_LABEL_MAX = 200;
@@ -204,7 +205,7 @@ export function IntentPanel({
                     setIntentDetailId(it.id);
                   }}
                   delayLongPress={400}
-                  onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); toggleIntent(it.id); }}
+                  onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); playSfx('check'); toggleIntent(it.id); }}
                   style={{
                     flexDirection: 'row', alignItems: 'center', gap: 10,
                     paddingVertical: 9,
@@ -299,7 +300,7 @@ export function IntentPanel({
               <TouchableOpacity
                 key={it.id}
                 activeOpacity={0.7}
-                onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); toggleIntent(it.id); }}
+                onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); playSfx('check'); toggleIntent(it.id); }}
                 style={{
                   flexDirection: 'row', alignItems: 'center', gap: 10,
                   paddingVertical: 9,

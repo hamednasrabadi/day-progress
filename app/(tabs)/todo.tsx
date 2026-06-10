@@ -24,6 +24,7 @@ import { FEATURE_IDS, useIsUnlocked, useIsNew, isUnlocked } from '../../lib/unlo
 import { useTabBarMetrics } from '../../lib/tabBarMetrics';
 import { PALETTE, PROJECT_PALETTE, DEFAULT_COLOR, NEUTRAL_COLOR } from '../../lib/palette';
 import { ColorPicker } from '../../components/ColorPicker';
+import { playSfx } from '../../lib/sounds';
 
 LogBox.ignoreLogs(['setLayoutAnimationEnabledExperimental', 'SafeAreaView has been deprecated']);
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -998,14 +999,14 @@ export default function TodoScreen() {
 
   const handleCheck = useCallback(async (id: string) => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    const now = Date.now(); let targetNotifId: string | undefined; let voidCompleted = false; let justCompleted = false;
+    const now = Date.now(); let targetNotifId: string | undefined; let voidCompleted = false; let justCompleted = false; let justUncompleted = false;
     // Track promise-kept transition so we can fire the stat increment AFTER
     // the setTasks call resolves (avoids any chance of the increment beating
     // the task update through a render).
     let promiseKeptThisCheck = false;
     const updated = useAppStore.getState().tasks.map((t): Task => {
       if (t.id !== id) return t;
-      if (t.completed) return { ...t, completed: false, progress: 0, completedAt: undefined };
+      if (t.completed) { justUncompleted = true; return { ...t, completed: false, progress: 0, completedAt: undefined }; }
       targetNotifId = t.notificationId;
       if (t.text === ' ') voidCompleted = true;
       // Recurring tasks: advance BOTH startDate AND deadlineDate to the next occurrence.
@@ -1034,7 +1035,9 @@ export default function TodoScreen() {
       };
     });
     setTasks(updated);
-    if (promiseKeptThisCheck) recordPromiseKept();
+    if (promiseKeptThisCheck) { recordPromiseKept(); playSfx('success'); }
+    else if (justCompleted) playSfx('complete');
+    else if (justUncompleted) playSfx('undo');
     // Auto-tick any intent items linked to this task. Cheap, idempotent — won't
     // re-tick already-checked intents.
     if (justCompleted) {
@@ -1058,6 +1061,7 @@ export default function TodoScreen() {
 
   const handleSubCheck = useCallback((taskId: string, subId: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    playSfx('tap');
     setTasks(useAppStore.getState().tasks.map(t => {
       if (t.id !== taskId) return t;
       const subs = (t.subTasks || []).map(s => s.id === subId ? { ...s, completed: !s.completed } : s);
@@ -1067,6 +1071,7 @@ export default function TodoScreen() {
 
   const handleTrash = useCallback((t: Task) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+    playSfx('undo');
     if (t.notificationId) cancelTaskNotification(t.notificationId);
     setTasks(useAppStore.getState().tasks.map(x => x.id === t.id ? { ...x, status: 'trash' as TaskStatus, notificationId: undefined } : x));
   }, [setTasks]);
@@ -1455,6 +1460,7 @@ export default function TodoScreen() {
     };
     addDeepWorkSession(session);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    playSfx('success');
 
     // In-sheet "Mark done" — applies the user's opt-in BEFORE the session is
     // persisted so any downstream side-effects (intent auto-check, challenge

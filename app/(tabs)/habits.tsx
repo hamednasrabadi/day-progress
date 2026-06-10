@@ -360,6 +360,7 @@ const HabitCard = React.memo(function HabitCard({ habit, selectedDateStr, todayC
     // checkbox completion advance its linked challenges, same as hold-to-sweep.
     const nextStatus = statusRef.current === 'done' ? 'pending' : 'done';
     if (nextStatus === 'done') playSfx('check');
+    else playSfx('undo');
     onAction(habitIdRef.current, nextStatus, selectedDateRef.current);
   }, [onAction]);
 

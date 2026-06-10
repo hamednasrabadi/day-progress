@@ -658,6 +658,10 @@ interface AppState {
   // in the backup meta so a restoring user isn't shown it again.
   introSeen: boolean;
   setIntroSeen: (v: boolean) => void;
+  // UI sound effects (taps, completions, milestones). Default on; always
+  // respects the phone's silent switch. This is the app-wide mute.
+  soundEnabled: boolean;
+  setSoundEnabled: (v: boolean) => void;
   unlock: (featureId: string) => void;
   unlockAll: () => void;
   markDotSeen: (featureId: string) => void;
@@ -1175,6 +1179,8 @@ export const useAppStore = create<AppState>()(
       whisperQueue: [],
       introSeen: false,
       setIntroSeen: (v) => set({ introSeen: v }),
+      soundEnabled: true,
+      setSoundEnabled: (v) => set({ soundEnabled: v }),
       unlock: (featureId) => set((s) => {
         // Idempotent — already-unlocked features are no-ops, no spurious
         // state change, no React re-render.
