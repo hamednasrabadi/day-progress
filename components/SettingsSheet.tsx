@@ -62,7 +62,10 @@ export function SettingsSheet({
   // Transient backup status line + a restore confirmation holding the parsed
   // payload until the user okays the overwrite.
   const [backupNote, setBackupNote] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
-  const [pendingRestore, setPendingRestore] = useState<{ payload: any; exportedAt?: string } | null>(null);
+  const [pendingRestore, setPendingRestore] = useState<{ payload: any; exportedAt?: string; finalizeMedia?: () => Promise<void> } | null>(null);
+  // True while a confirmed restore extracts bundled media (a few seconds on a
+  // media-heavy .zip) — drives the "Restoring…" button state.
+  const [restoring, setRestoring] = useState(false);
 
   // ── Backup ──
   const handleExport = async () => {
@@ -80,18 +83,30 @@ export function SettingsSheet({
       if (!res.cancelled) setBackupNote({ kind: 'err', text: res.reason });
       return;
     }
-    // Hold the payload behind a confirm — restoring overwrites current data.
-    setPendingRestore({ payload: res.payload, exportedAt: res.envelope?.exportedAt });
+    // Hold the payload behind a confirm — restoring overwrites current data. Media
+    // extraction (finalizeMedia, for a .zip) is deferred to confirm so the dialog
+    // appears instantly instead of waiting through it.
+    setPendingRestore({ payload: res.payload, exportedAt: res.envelope?.exportedAt, finalizeMedia: res.finalizeMedia });
   };
 
-  const confirmRestore = () => {
-    if (!pendingRestore) return;
-    // One-tap full restore: every current slice. (Meta — unlock state, counters
-    // — always rides along inside applyBackup regardless of the key list.)
-    applyBackup(pendingRestore.payload, [...ALL_KEYS]);
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    setPendingRestore(null);
-    setBackupNote({ kind: 'ok', text: 'Backup restored.' });
+  const confirmRestore = async () => {
+    if (!pendingRestore || restoring) return;
+    setRestoring(true);
+    try {
+      // Extract bundled media now (post-confirm) so a cancelled restore writes
+      // nothing and the confirm dialog wasn't held up by it. No-op for a .json.
+      await pendingRestore.finalizeMedia?.();
+      // One-tap full restore: every current slice. (Meta — unlock state, counters
+      // — always rides along inside applyBackup regardless of the key list.)
+      applyBackup(pendingRestore.payload, [...ALL_KEYS]);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setBackupNote({ kind: 'ok', text: 'Backup restored.' });
+    } catch (e: any) {
+      setBackupNote({ kind: 'err', text: e?.message || 'Restore failed.' });
+    } finally {
+      setRestoring(false);
+      setPendingRestore(null);
+    }
   };
 
   return (
@@ -194,7 +209,7 @@ export function SettingsSheet({
                   <Feather name="download" size={16} color={theme.textMain} />
                   <View style={{ flex: 1 }}>
                     <Text style={{ color: theme.textMain, fontWeight: '700', fontSize: 14 }}>Export everything</Text>
-                    <Text style={{ color: theme.textSub, fontSize: 11, fontWeight: '500', marginTop: 2 }}>Save a JSON backup of all your data and settings.</Text>
+                    <Text style={{ color: theme.textSub, fontSize: 11, fontWeight: '500', marginTop: 2 }}>Save a .zip backup of all your data — including photos and voice memos.</Text>
                   </View>
                   <Feather name="chevron-right" size={16} color={theme.textSub} />
                 </View>
@@ -207,7 +222,7 @@ export function SettingsSheet({
                   <Feather name="upload" size={16} color={theme.textMain} />
                   <View style={{ flex: 1 }}>
                     <Text style={{ color: theme.textMain, fontWeight: '700', fontSize: 14 }}>Import from file</Text>
-                    <Text style={{ color: theme.textSub, fontSize: 11, fontWeight: '500', marginTop: 2 }}>Restore everything from a backup JSON.</Text>
+                    <Text style={{ color: theme.textSub, fontSize: 11, fontWeight: '500', marginTop: 2 }}>Restore everything from a backup file (.zip, or an older .json).</Text>
                   </View>
                   <Feather name="chevron-right" size={16} color={theme.textSub} />
                 </View>
@@ -240,34 +255,39 @@ export function SettingsSheet({
         {/* Feature Hunt depth map — full-screen, opened from the day-30 row. */}
         <FeatureHunt visible={featureHuntOpen} onClose={() => setFeatureHuntOpen(false)} theme={theme} isDarkMode={theme.isDark} />
 
-        {/* ── RESTORE CONFIRM ── restoring overwrites current data, so gate it. */}
+        {/* ── RESTORE CONFIRM ── an absolute overlay INSIDE the settings Modal, not a
+            nested <Modal> (which renders behind the sheet and can't be tapped). It's the
+            LAST child here, so it already paints on top by draw order — deliberately NO
+            zIndex: zIndex makes RN reorder native views on Android, and that reorder
+            raced the draw when the overlay popped in on import, crashing with a null-child
+            NPE in dispatchGetDisplayList. Draw order alone is enough and is crash-safe. */}
         {pendingRestore && (
-          <Modal visible transparent animationType="fade" onRequestClose={() => setPendingRestore(null)}>
-            <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 24 }}>
-              <View style={{ backgroundColor: theme.surface, borderRadius: 18, padding: 22, borderWidth: 1, borderColor: theme.border }}>
-                <Text style={{ color: theme.textMain, fontSize: 18, fontWeight: '900', letterSpacing: -0.4, marginBottom: 10 }}>
-                  Restore this backup?
-                </Text>
-                <Text style={{ color: theme.textSub, fontSize: 13, fontWeight: '600', lineHeight: 19, marginBottom: 18 }}>
-                  This replaces your current data with everything in the file. Your unlock progress comes along too.
-                </Text>
-                <View style={{ flexDirection: 'row', gap: 8 }}>
-                  <TouchableOpacity
-                    onPress={() => setPendingRestore(null)}
-                    style={{ flex: 1, paddingVertical: 12, borderRadius: 10, borderWidth: 1, borderColor: theme.border, alignItems: 'center' }}
-                  >
-                    <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '900' }}>Cancel</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    onPress={confirmRestore}
-                    style={{ flex: 1, paddingVertical: 12, borderRadius: 10, backgroundColor: theme.textMain, alignItems: 'center' }}
-                  >
-                    <Text style={{ color: theme.bg, fontSize: 12, fontWeight: '900' }}>Restore</Text>
-                  </TouchableOpacity>
-                </View>
+          <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 24 }}>
+            <View style={{ backgroundColor: theme.surface, borderRadius: 18, padding: 22, borderWidth: 1, borderColor: theme.border }}>
+              <Text style={{ color: theme.textMain, fontSize: 18, fontWeight: '900', letterSpacing: -0.4, marginBottom: 10 }}>
+                Restore this backup?
+              </Text>
+              <Text style={{ color: theme.textSub, fontSize: 13, fontWeight: '600', lineHeight: 19, marginBottom: 18 }}>
+                This replaces your current data with everything in the file. Your unlock progress comes along too.
+              </Text>
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <TouchableOpacity
+                  onPress={() => setPendingRestore(null)}
+                  disabled={restoring}
+                  style={{ flex: 1, paddingVertical: 12, borderRadius: 10, borderWidth: 1, borderColor: theme.border, alignItems: 'center', opacity: restoring ? 0.4 : 1 }}
+                >
+                  <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '900' }}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={confirmRestore}
+                  disabled={restoring}
+                  style={{ flex: 1, paddingVertical: 12, borderRadius: 10, backgroundColor: theme.textMain, alignItems: 'center', opacity: restoring ? 0.7 : 1 }}
+                >
+                  <Text style={{ color: theme.bg, fontSize: 12, fontWeight: '900' }}>{restoring ? 'Restoring…' : 'Restore'}</Text>
+                </TouchableOpacity>
               </View>
             </View>
-          </Modal>
+          </View>
         )}
       </KeyboardAvoidingView>
     </Modal>
