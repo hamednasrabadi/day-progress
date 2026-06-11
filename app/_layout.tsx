@@ -31,11 +31,6 @@ import { getTheme } from '../lib/timelineTheme';
 import { todayStr, EMPTY_APP_STATE_FOR_UNLOCKS, useDaysSinceInstall, useIsUnlocked, FEATURE_IDS } from '../lib/unlocks';
 import { useUnlockTriggers } from '../lib/unlockTriggers';
 
-// Tab bar height duplicated from app/(tabs)/_layout.tsx so the global Whisper
-// bar can park immediately above it. Keep in sync with that file's
-// tabBarStyle.height.
-const TAB_BAR_HEIGHT = 110;
-
 // ── Notification foreground behaviour ──────────────────────────────────────
 // Registered once at the module level so it applies for the lifetime of the app.
 Notifications.setNotificationHandler({
@@ -244,12 +239,10 @@ export default function RootLayout() {
         <Stack screenOptions={{ headerShown: false }} />
       </ThemeProvider>
 
-      {/* Global whisper bar — sits above the tab bar on every screen. The
-          component renders nothing when the queue is empty or the keyboard
-          is open, so a permanently-mounted instance here is cheap. Sits
-          BELOW the alarm modal because the modal uses a separate RN portal
-          layer (zIndex doesn't compete across portals). */}
-      <Whisper bottomOffset={TAB_BAR_HEIGHT} />
+      {/* Global unlock toast — drops from the top on every screen when a feature
+          unlocks; auto-dismisses. Reads the whisperQueue. Sits BELOW the alarm
+          modal (separate RN portal layer, so zIndex doesn't compete). */}
+      <Whisper />
 
       {/* First-launch growth intro — sets the "this app reveals itself" frame
           and offers the power-user "show me everything" fork. One-shot. */}
