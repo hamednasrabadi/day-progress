@@ -107,16 +107,6 @@ const S_MONTHS = ['Farvardin', 'Ordibehesht', 'Khordad', 'Tir', 'Mordad', 'Shahr
 // Ignored on iOS. Apply to every TextInput that can receive Persian/Arabic input.
 const persianSafeInputStyle = { includeFontPadding: false as const };
 
-// ── "Go for more" easter egg (EXPERIMENTAL) ──────────────────────────────────
-// A secret early-finish moment. SHIPS OFF — flip GO_FOR_MORE_ENABLED to true
-// only to test in dev; beta/production stay dark. Built to be HARD (conquer the
-// whole day before 4pm) and MYSTERIOUS (low chance even then, once/day, and it
-// retires forever after being ignored 3 times). Reward payload is a deferred
-// placeholder (the diary tie-in comes later).
-const GO_FOR_MORE_ENABLED = false;
-const GO_FOR_MORE_CHANCE = 0.34;      // ~1 in 3, even once you qualify
-const GO_FOR_MORE_BEFORE_HOUR = 16;   // must conquer the day before 4pm
-
 const getFormatDateStr = (date: Date = new Date()) => {
   const d = new Date(date); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().split('T')[0];
 };
@@ -472,7 +462,6 @@ export default function HabitsScreen() {
     addOrUpdateHabit, deleteHabit, retireHabit, unretireHabit, updateHabitStatus, toggleHabitAction,
     setHabitCompletionNote, markWhisperSeen,
     lastDayConqueredCelebrated, setLastDayConqueredCelebrated,
-    goForMoreRetired, goForMoreLastShown, recordGoForMoreShown, recordGoForMoreIgnored,
     weeklyReflections, addWeeklyReflection, addOrUpdateNote, incrementTotalNotesCreated,
   } = useAppStore();
 
@@ -499,11 +488,6 @@ export default function HabitsScreen() {
   // Sort order for the per-habit breakdown. Default ascending = weakest first,
   // so underperforming habits surface on their own (no nagging review needed).
   const [strengthSortAsc, setStrengthSortAsc] = useState(true);
-  // "Go for more" easter egg surface (experimental, flagged off). engagedRef
-  // tracks whether the user stepped toward it before it auto-faded, so a let-it-
-  // pass correctly counts as an "ignore" toward the 3-strikes retirement.
-  const [goForMoreActive, setGoForMoreActive] = useState(false);
-  const goForMoreEngagedRef = useRef(false);
 
   // Pact history modal
   const [showPactHistory, setShowPactHistory] = useState(false);
@@ -1027,38 +1011,9 @@ export default function HabitsScreen() {
 
       // Every scheduled habit is done — let the sun set on the day.
       setActiveEclipse(true);
-
-      // ── "Go for more" easter egg (experimental, flagged off) ──
-      // Only rolls when the day is conquered BEFORE 4pm (hard), then a low
-      // chance (mysterious), at most once/day, and never if it's been retired
-      // after 3 ignores. Surfaces after the eclipse settles so the two moments
-      // don't collide.
-      if (
-        GO_FOR_MORE_ENABLED &&
-        !goForMoreRetired &&
-        goForMoreLastShown !== selectedDateStr &&
-        new Date().getHours() < GO_FOR_MORE_BEFORE_HOUR &&
-        Math.random() < GO_FOR_MORE_CHANCE
-      ) {
-        recordGoForMoreShown(selectedDateStr);
-        goForMoreEngagedRef.current = false;
-        setTimeout(() => setGoForMoreActive(true), 3200);
-      }
     }
     prevIsAllDone.current = isAllDone;
-  }, [isAllDone, habits, pact, selectedDateStr, lastDayConqueredCelebrated, setLastDayConqueredCelebrated, goForMoreRetired, goForMoreLastShown, recordGoForMoreShown]);
-
-  // Auto-fade the "go for more" moment. If it's let to pass (not engaged), that
-  // counts as an ignore toward the 3-strikes retirement. Engaging closes the
-  // modal first, so this cleanup clears the timer and no ignore is recorded.
-  useEffect(() => {
-    if (!goForMoreActive) return;
-    const t = setTimeout(() => {
-      if (!goForMoreEngagedRef.current) recordGoForMoreIgnored();
-      setGoForMoreActive(false);
-    }, 5000);
-    return () => clearTimeout(t);
-  }, [goForMoreActive, recordGoForMoreIgnored]);
+  }, [isAllDone, habits, pact, selectedDateStr, lastDayConqueredCelebrated, setLastDayConqueredCelebrated]);
 
   const eclipseUiShift = useAnimatedStyle(() => ({
     opacity: interpolate(eclipseProgress.value, [0, 0.6], [1, 0], Extrapolation.CLAMP),
@@ -1449,27 +1404,6 @@ export default function HabitsScreen() {
             <View style={{ flex: 1 }} pointerEvents="none">
               {activeEclipse && <Eclipse_Horizon theme={theme} onDone={() => setActiveEclipse(false)} />}
             </View>
-          </Modal>
-
-          {/* "GO FOR MORE" — secret early-finish moment (EXPERIMENTAL, ships off).
-              A faint, wordless-feeling system line. Step toward it to engage
-              (reward TBD — deferred placeholder); let it fade and it counts as an
-              ignore (3 → gone forever). */}
-          <Modal visible={goForMoreActive} transparent animationType="fade" statusBarTranslucent onRequestClose={() => { if (!goForMoreEngagedRef.current) recordGoForMoreIgnored(); setGoForMoreActive(false); }}>
-            <Pressable
-              style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'center', alignItems: 'center' }}
-              onPress={() => {
-                goForMoreEngagedRef.current = true;
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                setGoForMoreActive(false);
-                // TODO: reward payload (diary tie-in) — intentionally a no-op
-                // placeholder for now; the whole feature ships off in beta.
-              }}
-            >
-              <Animated.View entering={FadeIn.duration(1600)} exiting={FadeOut.duration(900)}>
-                <Text style={{ color: theme.textMain, fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace', fontSize: 13, letterSpacing: 3, opacity: 0.5, textAlign: 'center' }}>the day bent early</Text>
-              </Animated.View>
-            </Pressable>
           </Modal>
 
           {/* MAIN UI (WRAPPED IN ECLIPSE SHIFT) */}

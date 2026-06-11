@@ -687,17 +687,6 @@ interface AppState {
   lastDayConqueredCelebrated?: string;
   setLastDayConqueredCelebrated: (dateStr: string) => void;
 
-  // "Go for more" — secret early-finish easter egg (EXPERIMENTAL, ships OFF via
-  // GO_FOR_MORE_ENABLED in habits.tsx). goForMoreIgnores counts how many times
-  // the moment was let to pass; at 3 it retires permanently (goForMoreRetired).
-  // goForMoreLastShown gates it to once per calendar day. These persist so the
-  // "goes dark forever" promise survives restarts.
-  goForMoreIgnores?: number;
-  goForMoreRetired?: boolean;
-  goForMoreLastShown?: string;
-  recordGoForMoreShown: (dateStr: string) => void;
-  recordGoForMoreIgnored: () => void;
-
   // ── The Pact ──
   pact?: {
     level: number;
@@ -1264,11 +1253,6 @@ export const useAppStore = create<AppState>()(
         return { whispersSeen: { ...seen, [key]: true } };
       }),
       setLastDayConqueredCelebrated: (dateStr) => set({ lastDayConqueredCelebrated: dateStr }),
-      recordGoForMoreShown: (dateStr) => set({ goForMoreLastShown: dateStr }),
-      recordGoForMoreIgnored: () => set((s) => {
-        const n = (s.goForMoreIgnores ?? 0) + 1;
-        return { goForMoreIgnores: n, goForMoreRetired: n >= 3 };
-      }),
       setPact: (pact) => set({ pact }),
       setHabitCompletionNote: (habitId, dateStr, note) => set((s) => ({
         habits: s.habits.map(h => {
@@ -1589,9 +1573,6 @@ export const useAppStore = create<AppState>()(
         reflectedKeys: [],
         whispersSeen: {},
         lastDayConqueredCelebrated: undefined,
-        goForMoreIgnores: undefined,
-        goForMoreRetired: undefined,
-        goForMoreLastShown: undefined,
         pact: undefined,
       }),
     }),
