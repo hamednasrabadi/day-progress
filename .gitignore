@@ -55,3 +55,11 @@ app-example
 # planning notes, code backups, scratch — anything you don't want in the repo.
 # Just drop a new file in /local instead of adding a new ignore rule each time.
 /local/
+
+# Design / sound lab — a local-only, __DEV__-gated sandbox for trying designs.
+# It lives on the persian-rtl-test branch; these rules let it sit in the working
+# tree on any branch and stay runnable without ever being committed to master.
+# (The lab tab must live in app/(tabs)/ to be routable, so it can't go in /local.)
+app/(tabs)/lab.tsx
+components/lab/
+assets/sfx-lab/
