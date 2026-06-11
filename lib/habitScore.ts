@@ -9,27 +9,32 @@
  * Rules per scheduled day:
  *   completion: +5  (+7.5 "comeback" only once a habit has reached 50 and then
  *               slipped back under it — a first-time climb to 50 gets the normal +5)
- *   miss/skip:  -8
- *   rest day 1 in a row: 0   (rest is free)
- *   rest day 2 in a row: -2
- *   rest day 3 in a row: -4
- *   rest day 4 in a row: -6
- *   rest day 5+ in a row: -8  (rest becomes equivalent to running away)
+ *   miss:       -6, but the FIRST miss each (Sun-start) week is free — one silent
+ *               grace, never stacked (an unused week doesn't bank a second).
+ *   skip:       -6 always — a deliberate skip is a choice, so no grace.
+ *   rest:       0 / -2 / -4 / -6 by consecutive rest days (caps at -6), and the
+ *               streak RESETS each week, so the first rest of every week is free.
+ *
+ * Forward-freeze: changing a habit's schedule or target would re-judge its whole
+ * past under the new rules. The editor stamps `scoreBaseline = { date, value }` at
+ * the moment of the edit; the walk resumes from that frozen value forward, so edits
+ * never retroactively wreck earned score (see saveHabit in app/(tabs)/habits.tsx).
  *
  * Today's pending state never penalizes — user might still complete it.
- * Score capped at [0, 100]. Walks forward from habit creation to reference date.
+ * Score capped at [0, 100]. Walks forward from creation (or the baseline) to the
+ * reference date.
  */
 
 import type { Habit } from '../store/useAppStore';
 
 const STRENGTH_GAIN = 5;
-const STRENGTH_LOSS = 8;
+const STRENGTH_LOSS = 6; // a miss or a deliberate skip — still costs more than the +5 gain
 const COMEBACK_THRESHOLD = 50;
 const COMEBACK_MULTIPLIER = 1.5;
 // A new habit's pull on the GLOBAL average ramps 0→1 over its first this-many days,
 // so adding a habit doesn't tank your overall strength — it blends in as it matures.
 const MATURITY_RAMP_DAYS = 14;
-const REST_PENALTY_BY_STREAK = [0, 0, -2, -4, -6, -8]; // index = streak length
+const REST_PENALTY_BY_STREAK = [0, 0, -2, -4, -6]; // consecutive rest streak; caps at -6 (≈ a miss), and resets weekly
 const JS_DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 const diffInDays = (startStr: string, endStr: string) => {
@@ -76,17 +81,45 @@ export function calculateStrengthScore(habit: Habit, referenceDate: string): num
   const dateCounts: Record<string, number> = {};
   (habit.history ?? []).forEach(d => { dateCounts[d] = (dateCounts[d] || 0) + 1; });
 
+  // Forward-freeze: editing a habit's schedule or target would re-judge its whole
+  // past under the new rules. When that happens the editor stamps a baseline
+  // { date, value } = the score the moment before the edit; we resume the walk from
+  // the day AFTER that date with the frozen value, so history is never retroactively
+  // re-graded. No baseline (or a reference before it) → walk from birth as before.
   let score = 0;
-  let restStreak = 0;
+  let walkStartUTC = createdUTC;
   // Latches true once the habit first reaches the threshold. Gates the comeback bonus
   // so it only helps an ESTABLISHED habit that slipped back under 50 — never a habit
   // climbing to 50 for the first time.
   let hasReached50 = false;
+  const baseline = habit.scoreBaseline;
+  if (baseline && referenceDate >= baseline.date) {
+    const [by, bm, bd] = baseline.date.split('-').map(Number);
+    walkStartUTC = Date.UTC(by, bm - 1, bd) + 86400000; // day after the edit — that day is already in `value`
+    score = baseline.value;
+    hasReached50 = baseline.value >= COMEBACK_THRESHOLD;
+  }
+
+  let restStreak = 0;
+  // The grace miss and the rest-streak escalation both reset at the start of each
+  // (Sunday-start) week. weekKey = -1 forces a reset on the first day walked.
+  let weekKey = -1;
+  let graceUsedThisWeek = false;
   const paused = habit.pausedRanges;
 
-  for (let t = createdUTC; t <= refUTC; t += 86400000) {
+  for (let t = walkStartUTC; t <= refUTC; t += 86400000) {
     const d = new Date(t);
     const dStr = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+
+    // Week boundary (Sunday start): reset the weekly grace AND the rest streak, so the
+    // first miss and the first rest of every week are free. `dayWeekKey` is the day
+    // index of that week's Sunday — unique per week, monotonically increasing.
+    const dayWeekKey = Math.floor(t / 86400000) - d.getUTCDay();
+    if (dayWeekKey !== weekKey) {
+      weekKey = dayWeekKey;
+      graceUsedThisWeek = false;
+      restStreak = 0;
+    }
 
     // Long-pause (archived) windows are skipped entirely — no penalty, no gain.
     // The score freezes across the pause and resumes where it left off.
@@ -108,6 +141,7 @@ export function calculateStrengthScore(habit: Habit, referenceDate: string): num
     if (!isHabitScheduledOn(habit, dStr)) continue;
 
     if (habit.skippedDays?.includes(dStr)) {
+      // A deliberate skip always costs — no grace.
       score -= STRENGTH_LOSS;
     } else if ((dateCounts[dStr] || 0) >= habit.targetCount) {
       // Bonus only for an established habit clawing back (hasReached50) — a first-time
@@ -115,8 +149,14 @@ export function calculateStrengthScore(habit: Habit, referenceDate: string): num
       const gain = (score < COMEBACK_THRESHOLD && hasReached50) ? STRENGTH_GAIN * COMEBACK_MULTIPLIER : STRENGTH_GAIN;
       score += gain;
     } else {
-      if (dStr === referenceDate) continue;
-      score -= STRENGTH_LOSS;
+      if (dStr === referenceDate) continue; // today still pending — never judged
+      // A genuine miss: the first each week is free (silent grace, never stacked),
+      // the rest cost a full loss.
+      if (!graceUsedThisWeek) {
+        graceUsedThisWeek = true;
+      } else {
+        score -= STRENGTH_LOSS;
+      }
     }
 
     if (score < 0) score = 0;

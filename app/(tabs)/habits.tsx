@@ -854,6 +854,25 @@ export default function HabitsScreen() {
       completionNotes: existing?.completionNotes,
       status: 'active',
     };
+    // Forward-freeze: if the schedule or target changed on an existing habit, the live
+    // score would re-grade the whole past under the new rules. Snapshot the pre-edit
+    // score as a baseline so the walk resumes from today's value forward. Unchanged
+    // schedule/target → carry any existing baseline untouched.
+    if (existing) {
+      const freqKey = (f?: string[]) => [...(f ?? [])].sort().join(',');
+      const scheduleOrTargetChanged =
+        existing.scheduleType !== newHabit.scheduleType ||
+        existing.targetCount !== newHabit.targetCount ||
+        (existing.intervalDays ?? null) !== (newHabit.intervalDays ?? null) ||
+        (existing.startDate ?? null) !== (newHabit.startDate ?? null) ||
+        freqKey(existing.frequency) !== freqKey(newHabit.frequency);
+      if (scheduleOrTargetChanged) {
+        const today = getFormatDateStr();
+        newHabit.scoreBaseline = { date: today, value: calculateStrengthScore(existing, today) };
+      } else if (existing.scoreBaseline) {
+        newHabit.scoreBaseline = existing.scoreBaseline;
+      }
+    }
     addOrUpdateHabit(newHabit);
     // Monotonic unlock counter — only fresh habits tick it (PACT + STORAGE at >=3).
     if (!editingId) useAppStore.getState().incrementTotalHabitsCreated();

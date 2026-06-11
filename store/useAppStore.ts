@@ -92,6 +92,11 @@ export type Habit = {
   // sat archived; scoring SKIPS those days (no penalty), so a pause freezes the
   // score instead of tanking it. An open range (no `to`) = currently archived.
   pausedRanges?: { from: string; to?: string }[];
+  // Forward-freeze anchor, set by the habit editor when the schedule or target
+  // changes: { date, value } = the strength score the instant before the edit.
+  // calculateStrengthScore resumes its walk from this frozen value forward instead
+  // of re-judging the whole past under the new rules. Absent on un-edited habits.
+  scoreBaseline?: { date: string; value: number };
 };
 
 // ─── TASK TYPES ───
