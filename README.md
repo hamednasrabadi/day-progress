@@ -98,7 +98,7 @@ A note-taking surface that goes well past plain text:
 
 ## Progressive Unlock
 
-Day-Progress doesn't hand a new user everything at once. Features reveal themselves as you use the app - a quiet "whisper" bar announces each unlock, a small dot marks what's new, and tabs like Challenges only appear once you've put in a few days. A first-launch intro sets the frame. Around day 30 a "depth map" (Feature Hunt) lays out everything the app contains.
+Day-Progress doesn't hand a new user everything at once. Features reveal themselves as you use the app - a quiet "whisper" bar announces each unlock, a small dot marks what's new, and tabs like Challenges only appear once you've put in a few days. A first-launch intro sets the frame. Around day 30 a "depth map" lays out everything the app contains.
 
 Under the hood it's a small data-driven engine (`lib/unlocks.ts` + `lib/unlockTriggers.ts`): unlock conditions are evaluated against primitive counters in the store via narrow Zustand selectors, so the root layout only re-renders when a counter actually crosses a threshold - gating lives in data, not hardcoded per screen.
 
@@ -151,7 +151,7 @@ day-progress/
 │   ├── IntentPanel.tsx              # "what is today for?" (Habits)
 │   ├── DayRatingCheckIn.tsx         # end-of-day rating (Habits)
 │   ├── GrowthIntro.tsx              # first-launch progressive-unlock intro
-│   ├── FeatureHunt.tsx              # day-30 "depth map" of features
+│   ├── DepthMap.tsx                 # day-30 "depth map" of features
 │   ├── Whisper.tsx                  # ambient unlock-announcement bar
 │   ├── UnlockDot.tsx                # "new" dot for freshly unlocked features
 │   ├── DayConqueredVariations.tsx   # "Eclipse" celebration variants

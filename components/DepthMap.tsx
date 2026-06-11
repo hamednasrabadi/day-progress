@@ -1,5 +1,5 @@
 /**
- * Feature Hunt — a depth map of what the app contains.
+ * DepthMap — a depth map of what the app contains.
  *
  * Discovery, not tutorial: it shows WHAT exists, never HOW to unlock it.
  * Appears in Settings only after 30 calendar days from install (the gate
@@ -25,10 +25,10 @@ import { Modal, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { useAppStore } from '../store/useAppStore';
-import { FEATURE_HUNT_ORDER, FEATURE_META } from '../lib/unlocks';
+import { DEPTH_MAP_ORDER, FEATURE_META } from '../lib/unlocks';
 import type { Theme } from '../lib/timelineTheme';
 
-export function FeatureHunt({
+export function DepthMap({
   visible, onClose, theme, isDarkMode,
 }: {
   visible: boolean;
@@ -41,8 +41,8 @@ export function FeatureHunt({
   const allFeaturesUnlocked = useAppStore(s => s.allFeaturesUnlocked);
 
   const isUnlk = (id: string) => allFeaturesUnlocked || !!unlockedFeatures[id];
-  const discovered = FEATURE_HUNT_ORDER.filter(isUnlk);
-  const notYet = FEATURE_HUNT_ORDER.filter(id => !isUnlk(id));
+  const discovered = DEPTH_MAP_ORDER.filter(isUnlk);
+  const notYet = DEPTH_MAP_ORDER.filter(id => !isUnlk(id));
   const allFound = notYet.length === 0;
 
   const sectionHeader = (label: string) => (

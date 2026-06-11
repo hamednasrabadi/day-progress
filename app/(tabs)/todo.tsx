@@ -2152,7 +2152,7 @@ export default function TodoScreen() {
                 showsVerticalScrollIndicator={false}
                 keyboardShouldPersistTaps="always"
                 ListHeaderComponent={
-                  // Deep Work + ADHD (Focus Mode) tiles, side by side. Each is
+                  // Deep Work + ADHD Mode tiles, side by side. Each is
                   // gated independently; flex:1 each so a missing sibling lets
                   // the other take the full width. ADHD also needs a non-empty
                   // pool to be worth showing. Neither unlocked → null header

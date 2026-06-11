@@ -4,7 +4,7 @@
  * The calm-pivot cuts the Timeline, which is where Settings used to live
  * (components/timeline/SettingsModal.tsx). This is the surface that survives:
  * it carries only the GLOBAL settings — Appearance, End of Week, Weekly
- * Reflection, Backup, and the day-30 Feature Hunt — and deliberately drops the
+ * Reflection, Backup, and the day-30 depth map — and deliberately drops the
  * Timeline-only rows (block alerts, now-playing, pre-alert offset) that die
  * with that tab.
  *
@@ -24,8 +24,8 @@ import * as Haptics from 'expo-haptics';
 import { Feather } from '@expo/vector-icons';
 import type { Theme } from '../lib/timelineTheme';
 import { useAppStore } from '../store/useAppStore';
-import { useDaysSinceInstall, FEATURE_HUNT_ORDER } from '../lib/unlocks';
-import { FeatureHunt } from './FeatureHunt';
+import { useDaysSinceInstall, DEPTH_MAP_ORDER } from '../lib/unlocks';
+import { DepthMap } from './DepthMap';
 import { exportBackup, pickAndReadBackup, applyBackup, ALL_KEYS } from '../lib/backup';
 import { playSfx } from '../lib/sounds';
 
@@ -56,9 +56,9 @@ export function SettingsSheet({
   // organically fully-unlocked app. A map of an empty frontier is pointless.
   const allFeaturesUnlocked = useAppStore(s => s.allFeaturesUnlocked);
   const unlockedFeatures = useAppStore(s => s.unlockedFeatures);
-  const anyLocked = !allFeaturesUnlocked && FEATURE_HUNT_ORDER.some(id => !unlockedFeatures?.[id]);
+  const anyLocked = !allFeaturesUnlocked && DEPTH_MAP_ORDER.some(id => !unlockedFeatures?.[id]);
 
-  const [featureHuntOpen, setFeatureHuntOpen] = useState(false);
+  const [depthMapOpen, setDepthMapOpen] = useState(false);
   // Transient backup status line + a restore confirmation holding the parsed
   // payload until the user okays the overwrite.
   const [backupNote, setBackupNote] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
@@ -242,7 +242,7 @@ export function SettingsSheet({
                 still something locked to discover (hidden for fully-unlocked apps). */}
             {daysSinceInstall >= 30 && anyLocked ? (
               <TouchableOpacity
-                onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setFeatureHuntOpen(true); }}
+                onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setDepthMapOpen(true); }}
                 style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: theme.bg, borderRadius: 14, padding: 16, marginTop: 4, marginBottom: 8 }}
               >
                 <Text style={{ color: theme.textMain, fontWeight: '700', fontSize: 14 }}>The app grows with you.</Text>
@@ -256,8 +256,8 @@ export function SettingsSheet({
           </TouchableOpacity>
         </View>
 
-        {/* Feature Hunt depth map — full-screen, opened from the day-30 row. */}
-        <FeatureHunt visible={featureHuntOpen} onClose={() => setFeatureHuntOpen(false)} theme={theme} isDarkMode={theme.isDark} />
+        {/* Depth map — full-screen, opened from the day-30 row. */}
+        <DepthMap visible={depthMapOpen} onClose={() => setDepthMapOpen(false)} theme={theme} isDarkMode={theme.isDark} />
 
         {/* ── RESTORE CONFIRM ── an absolute overlay INSIDE the settings Modal, not a
             nested <Modal> (which renders behind the sheet and can't be tapped). It's the

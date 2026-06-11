@@ -65,11 +65,10 @@ export const ALL_FEATURE_IDS: string[] = Object.values(FEATURE_IDS);
 
 // ── Feature display metadata ───────────────────────────────────────────────
 // Single source of truth for human-facing names + one-line descriptions.
-// Drives the Feature Hunt depth map (components/FeatureHunt.tsx). `group` is
-// the tab the feature belongs to — used only for ordering the map. Display
-// names follow the prompt's exact wording (note ADHD_MODE shows as "Focus
-// Mode"). Descriptions are one plain sentence, no unlock instructions — the
-// Hunt shows WHAT exists, never HOW to get it.
+// Drives the depth map (components/DepthMap.tsx). `group` is the tab the
+// feature belongs to — used only for ordering the map. Descriptions are one
+// plain sentence, no unlock instructions — the depth map shows WHAT exists,
+// never HOW to get it.
 export type FeatureGroup = 'Tasks' | 'Notes' | 'Challenges' | 'Habits';
 export type FeatureMeta = { name: string; description: string; group: FeatureGroup };
 
@@ -79,7 +78,7 @@ export const FEATURE_META: Record<string, FeatureMeta> = {
   [FEATURE_IDS.DEEP_WORK]:          { name: 'Deep Work',          description: 'Run a focused, timed session toward one thing.',     group: 'Tasks' },
   [FEATURE_IDS.RECURRING]:          { name: 'Recurring',          description: 'Tasks that come back on a schedule.',                group: 'Tasks' },
   [FEATURE_IDS.PROJECTS]:           { name: 'Projects',           description: 'Group related tasks into folders.',                  group: 'Tasks' },
-  [FEATURE_IDS.ADHD_MODE]:          { name: 'Focus Mode',         description: 'See one task at a time when the list feels like too much.', group: 'Tasks' },
+  [FEATURE_IDS.ADHD_MODE]:          { name: 'ADHD Mode',          description: 'See one task at a time when the list feels like too much.', group: 'Tasks' },
 
   [FEATURE_IDS.DIARY]:              { name: 'Diary',              description: 'A private, chronological journal.',                  group: 'Notes' },
   [FEATURE_IDS.MOOD_TAGGING]:       { name: 'Mood Tagging',       description: 'Tag how a diary entry felt.',                        group: 'Notes' },
@@ -97,8 +96,8 @@ export const FEATURE_META: Record<string, FeatureMeta> = {
   [FEATURE_IDS.WEEKLY_REVIEW]:      { name: 'Weekly Review',      description: 'Close out each week with a written reflection, saved to Notes.', group: 'Habits' },
 };
 
-// Display order for the Feature Hunt — grouped by tab, matching the prompt.
-export const FEATURE_HUNT_ORDER: string[] = [
+// Display order for the depth map — grouped by tab, matching the prompt.
+export const DEPTH_MAP_ORDER: string[] = [
   FEATURE_IDS.SUBTASKS, FEATURE_IDS.PROMISE, FEATURE_IDS.DEEP_WORK, FEATURE_IDS.RECURRING, FEATURE_IDS.PROJECTS, FEATURE_IDS.ADHD_MODE,
   FEATURE_IDS.DIARY, FEATURE_IDS.MOOD_TAGGING, FEATURE_IDS.HIGHLIGHT_COLORS, FEATURE_IDS.SEALING,
   FEATURE_IDS.CHALLENGES_TAB, FEATURE_IDS.MILESTONES, FEATURE_IDS.LINKED_HABITS, FEATURE_IDS.CAPSULE_LOCK,
