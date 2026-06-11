@@ -24,7 +24,7 @@ import * as Haptics from 'expo-haptics';
 import { Feather } from '@expo/vector-icons';
 import type { Theme } from '../lib/timelineTheme';
 import { useAppStore } from '../store/useAppStore';
-import { useDaysSinceInstall } from '../lib/unlocks';
+import { useDaysSinceInstall, FEATURE_HUNT_ORDER } from '../lib/unlocks';
 import { FeatureHunt } from './FeatureHunt';
 import { exportBackup, pickAndReadBackup, applyBackup, ALL_KEYS } from '../lib/backup';
 import { playSfx } from '../lib/sounds';
@@ -51,6 +51,12 @@ export function SettingsSheet({
   const setSoundEnabled           = useAppStore(s => s.setSoundEnabled);
 
   const daysSinceInstall = useDaysSinceInstall();
+  // Whether anything is still locked. The depth-map row hides once there's nothing
+  // left to discover — either "show me everything" (allFeaturesUnlocked) or an
+  // organically fully-unlocked app. A map of an empty frontier is pointless.
+  const allFeaturesUnlocked = useAppStore(s => s.allFeaturesUnlocked);
+  const unlockedFeatures = useAppStore(s => s.unlockedFeatures);
+  const anyLocked = !allFeaturesUnlocked && FEATURE_HUNT_ORDER.some(id => !unlockedFeatures?.[id]);
 
   const [featureHuntOpen, setFeatureHuntOpen] = useState(false);
   // Transient backup status line + a restore confirmation holding the parsed
@@ -213,8 +219,9 @@ export function SettingsSheet({
               </Text>
             )}
 
-            {/* Feature Hunt — the depth map. Appears silently at day 30. */}
-            {daysSinceInstall >= 30 ? (
+            {/* The depth map. Appears silently at day 30 — but only while there's
+                still something locked to discover (hidden for fully-unlocked apps). */}
+            {daysSinceInstall >= 30 && anyLocked ? (
               <TouchableOpacity
                 onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setFeatureHuntOpen(true); }}
                 style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: theme.bg, borderRadius: 14, padding: 16, marginTop: 4, marginBottom: 8 }}
