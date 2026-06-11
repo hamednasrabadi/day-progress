@@ -166,6 +166,23 @@ const sortTasks = (taskList: Task[]) => {
   });
 };
 
+// ─── PROMISE EXPIRY ───
+// True when a promised task's deadline has passed but it's neither completed,
+// kept, nor already broken — i.e. it needs the user to confirm what happened.
+// Mirrors the end-of-day boundary getUrgency uses (a date-only deadline isn't
+// "passed" until 23:59:59 of that day).
+function promiseDeadlinePassed(t: Task, now: number): boolean {
+  if (!t.promised || t.completed || t.promiseBrokenAt || t.promiseKeptAt || !t.deadlineDate) return false;
+  if (t.status === 'trash' || t.status === 'archived') return false;
+  try {
+    const [y, m, d] = t.deadlineDate.split('-').map(Number);
+    const dt = new Date(y, m - 1, d);
+    if (t.deadlineTime) { const [h, mn] = t.deadlineTime.split(':').map(Number); dt.setHours(h, mn, 0, 0); }
+    else dt.setHours(23, 59, 59, 999);
+    return dt.getTime() < now;
+  } catch { return false; }
+}
+
 // ─── THEME ───
 type Theme = { bg: string; surface: string; border: string; textMain: string; textSub: string; danger: string; warning: string; success: string; accent: string; };
 function getTheme(mode: 'light' | 'dark' | 'blue' | 'sovereign'): Theme {
@@ -714,6 +731,14 @@ export default function TodoScreen() {
   // Promise toggle — see store comment for semantics. We only track the
   // *current* boolean here; the editor doesn't surface scar state.
   const [promised, setPromised] = useState<boolean>(false);
+  // "A promise needs a deadline" — set on a blocked save, shown persistently
+  // under the Promise toggle, and cleared the instant the condition resolves
+  // (an effective deadline is set, or Promise is switched off). NOT auto-timed —
+  // a message that vanishes on its own would just confuse.
+  const [promiseDeadlineErr, setPromiseDeadlineErr] = useState(false);
+  useEffect(() => {
+    if (promiseDeadlineErr && (!promised || (calOpen && deadlineDate))) setPromiseDeadlineErr(false);
+  }, [promiseDeadlineErr, promised, calOpen, deadlineDate]);
 
   // Project Form States
   const [newProjName, setNewProjName] = useState(''); const [newProjColor, setNewProjColor] = useState(DEFAULT_COLOR);
@@ -737,57 +762,39 @@ export default function TodoScreen() {
     if (changed) setTasks(updated);
   }, [setTasks]);
 
-  // ── PROMISE SWEEP ── stamp `promiseBrokenAt` on any promised, uncompleted
-  // task whose deadline has passed. Runs on focus alongside the phoenix
-  // wake. Each newly-broken promise increments the broken counter. The
-  // scar is permanent — completing or archiving the task afterward will
-  // not clear `promiseBrokenAt`.
-  //
-  // We also call `syncPromiseMonth` here to handle the edge case where
-  // the user opens the app after a month boundary without making any
-  // new promises (which would otherwise be the only trigger to roll the
-  // monthly counter).
-  const sweepBrokenPromises = useCallback(() => {
+  // ── PROMISE DEADLINE CHECK ── on focus, if any promised task's deadline has
+  // passed without being resolved, open a prompt asking whether they actually
+  // finished it (people forget to tick things off). We no longer SILENTLY stamp
+  // a broken promise — the scar is applied only when the user answers "no".
+  // syncPromiseMonth still runs so the monthly counter rolls over on a quiet month.
+  const [promiseCheckOpen, setPromiseCheckOpen] = useState(false);
+  const checkExpiredPromises = useCallback(() => {
     const state = useAppStore.getState();
     state.syncPromiseMonth();
-    const currentTasks = state.tasks;
     const now = Date.now();
-    let brokenCount = 0;
-    const updated = currentTasks.map((t): Task => {
-      if (!t.promised) return t;
-      if (t.completed) return t;
-      if (t.promiseBrokenAt) return t;        // already scarred — no-op
-      if (t.promiseKeptAt) return t;          // kept already — won't break
-      if (!t.deadlineDate) return t;          // no deadline = no breakable moment
-      if (t.status === 'trash' || t.status === 'archived') return t;
-      // Compute the same end-of-day deadline boundary getUrgency uses, so
-      // a "due today" task with no time isn't flagged broken at 00:00.
-      let deadlineMs: number;
-      try {
-        const [y, m, d] = t.deadlineDate.split('-').map(Number);
-        const dt = new Date(y, m - 1, d);
-        if (t.deadlineTime) {
-          const [h, mn] = t.deadlineTime.split(':').map(Number);
-          dt.setHours(h, mn, 0, 0);
-        } else {
-          dt.setHours(23, 59, 59, 999);
-        }
-        deadlineMs = dt.getTime();
-      } catch {
-        return t;
-      }
-      if (deadlineMs >= now) return t;        // not yet past deadline
-      brokenCount++;
-      return { ...t, promiseBrokenAt: now };
-    });
-    if (brokenCount > 0) {
-      setTasks(updated);
-      // Fire one increment per detected break. Done outside the map to
-      // keep the iteration referentially clean — no side effects inside
-      // the mapper.
-      for (let i = 0; i < brokenCount; i++) recordPromiseBroken();
-    }
+    if (state.tasks.some(t => promiseDeadlinePassed(t, now))) setPromiseCheckOpen(true);
+  }, []);
+
+  // "No, I didn't finish it" → stamp the permanent broken scar + count it.
+  const breakPromise = useCallback((task: Task) => {
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    const now = Date.now();
+    setTasks(useAppStore.getState().tasks.map(t => t.id === task.id ? { ...t, promiseBrokenAt: now } : t));
+    recordPromiseBroken();
   }, [setTasks, recordPromiseBroken]);
+
+  // The expired-but-unresolved promise currently being asked about — derived
+  // live, so completing/breaking one immediately advances the prompt to the next.
+  const promiseCheckTask = useMemo(() => {
+    if (!promiseCheckOpen) return null;
+    const now = Date.now();
+    return tasks.find(t => promiseDeadlinePassed(t, now)) || null;
+  }, [promiseCheckOpen, tasks]);
+
+  // Close the prompt once every expired promise has been answered.
+  useEffect(() => {
+    if (promiseCheckOpen && !promiseCheckTask) setPromiseCheckOpen(false);
+  }, [promiseCheckOpen, promiseCheckTask]);
 
   // Per-focus side-effects. Stable deps so this only fires on actual focus
   // events — not on every expand/collapse interaction, which would otherwise
@@ -797,7 +804,7 @@ export default function TodoScreen() {
   // render so the FlashList has its content sized before we scroll.
   useFocusEffect(useCallback(() => {
     wakePhoenixTasks();
-    sweepBrokenPromises();
+    checkExpiredPromises();
     const checkPermissions = async () => {
       const { status } = await Notifications.getPermissionsAsync();
       if (status !== 'granted') await Notifications.requestPermissionsAsync();
@@ -814,7 +821,7 @@ export default function TodoScreen() {
       const offset = hasHeader ? NAV_HEIGHT - PEEK : 0;
       listRef.current?.scrollToOffset({ offset, animated: false });
     });
-  }, [wakePhoenixTasks, sweepBrokenPromises]));
+  }, [wakePhoenixTasks, checkExpiredPromises]));
 
   // Smart auto-expand — separated from the per-focus effect above so its
   // dependency on expandedProjectId doesn't cause the scrollToOffset there to
@@ -947,6 +954,14 @@ export default function TodoScreen() {
       return;
     }
     if (!txt.trim()) { setErr('Task name is required.'); return; }
+    // A promise without a deadline means nothing — block the save and point the
+    // user at the schedule. (The effective deadline mirrors what actually saves:
+    // the calendar must be open for the date to stick — see `data` below.)
+    if (promised && !(calOpen && deadlineDate)) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      setCalOpen(true); setDateTab('due'); setPromiseDeadlineErr(true);
+      return;
+    }
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     const now = Date.now();
     const currentEditingTask = editingTask;
@@ -1221,7 +1236,7 @@ export default function TodoScreen() {
   // tick — a state value would still be stale in this closure. null/undefined =
   // Inbox. Ignored when editing (the task's own projectId wins).
   const openTaskSheet = useCallback((task?: Task, projectForNew?: string | null) => {
-    Keyboard.dismiss(); setErr('');
+    Keyboard.dismiss(); setErr(''); setPromiseDeadlineErr(false);
     setScheduleNotice(null);
     if (task) {
       setEditingTask(task); setTxt(task.text); setNotes(task.notes || ''); setColor(task.color); setPriority(task.priority); setProjectId(task.projectId);
@@ -2441,6 +2456,9 @@ export default function TodoScreen() {
                       </View>
                       <Switch value={promised} onValueChange={(v) => { markDotSeen(FEATURE_IDS.PROMISE); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setPromised(v); }} trackColor={{ true: color }} thumbColor="#FFF" />
                     </TouchableOpacity>
+                    {promiseDeadlineErr ? (
+                      <Text style={{ color: theme.danger, fontSize: 12, fontWeight: '800', marginTop: -16, marginBottom: 20, paddingHorizontal: 2, lineHeight: 17 }}>A promise needs a deadline — set one above, or turn off Promise.</Text>
+                    ) : null}
                   </Animated.View>
                 ) : null}
 
@@ -3311,6 +3329,34 @@ export default function TodoScreen() {
                   })}
                 </ScrollView>
               </View>
+            </View>
+          </Modal>
+
+          {/* ── PROMISE DEADLINE CHECK ── a promised task's deadline passed;
+              ask whether it actually got done before scarring it broken (people
+              forget to tick things off). One at a time — answering reveals the
+              next; "ask me later" defers it to the next tab focus. */}
+          <Modal visible={promiseCheckOpen && !!promiseCheckTask} transparent animationType="fade" onRequestClose={() => setPromiseCheckOpen(false)}>
+            <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center', padding: 24 }}>
+              {promiseCheckTask && (
+                <View style={{ backgroundColor: theme.surface, width: '100%', maxWidth: 360, borderRadius: 24, padding: 24, borderWidth: 1, borderColor: theme.border }}>
+                  <View style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: hexToRgba(promiseCheckTask.color, 0.15), justifyContent: 'center', alignItems: 'center', marginBottom: 16 }}>
+                    <Feather name="shield" size={24} color={promiseCheckTask.color} />
+                  </View>
+                  <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 1.5, marginBottom: 8 }}>PROMISE · DEADLINE PASSED</Text>
+                  <Text style={[{ color: theme.textMain, fontSize: 19, fontWeight: '900', marginBottom: 10 }, rtlTextStyle(promiseCheckTask.text)]} numberOfLines={3}>{promiseCheckTask.text}</Text>
+                  <Text style={{ color: theme.textSub, fontSize: 14, lineHeight: 21, marginBottom: 22 }}>Did you complete this? You might have finished it and forgotten to check it off.</Text>
+                  <TouchableOpacity onPress={() => handleCheck(promiseCheckTask.id)} style={{ paddingVertical: 14, borderRadius: 12, alignItems: 'center', backgroundColor: theme.success, marginBottom: 10 }}>
+                    <Text style={{ color: '#FFF', fontWeight: '900', fontSize: 14 }}>Yes — I completed it</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => breakPromise(promiseCheckTask)} style={{ paddingVertical: 14, borderRadius: 12, alignItems: 'center', backgroundColor: theme.bg, borderWidth: 1, borderColor: theme.border, marginBottom: 6 }}>
+                    <Text style={{ color: theme.textMain, fontWeight: '800', fontSize: 14 }}>No — I didn't</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => setPromiseCheckOpen(false)} style={{ paddingVertical: 10, alignItems: 'center' }}>
+                    <Text style={{ color: theme.textSub, fontWeight: '700', fontSize: 13 }}>Ask me later</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
             </View>
           </Modal>
 
