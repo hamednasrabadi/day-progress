@@ -7,7 +7,7 @@ import * as Haptics from 'expo-haptics';
 import { Feather } from '@expo/vector-icons';
 import {
   StyleSheet, Text, View, ScrollView, TouchableOpacity, Pressable, Dimensions,
-  Platform, Modal, TextInput, Animated, Easing,
+  Platform, Modal, TextInput, Animated, Easing, Keyboard,
   StatusBar, TouchableWithoutFeedback, LayoutAnimation, UIManager, BackHandler, Switch
 } from 'react-native';
 import { GestureHandlerRootView, ScrollView as GHScrollView, Gesture, GestureDetector } from 'react-native-gesture-handler';
@@ -2107,6 +2107,22 @@ const ChallengeDetailView = ({
   const scrollNotesIntoView = useCallback(() => {
     setTimeout(() => scrollRef.current?.scrollToEnd?.({ animated: true }), 60);
   }, []);
+  // This detail is a fullScreen <Modal> — a detached native window that does NOT
+  // inherit the activity's keyboard resize, so the library's avoidance mis-measures
+  // (a black block) and plain undefined can't scroll. Drive the scroll's bottom
+  // padding off RN's own Keyboard events (which DO fire inside modals): add the
+  // keyboard's height so the composer at the bottom can scroll above it.
+  const [kbPad, setKbPad] = useState(0);
+  useEffect(() => {
+    const show = Keyboard.addListener('keyboardDidShow', e => setKbPad(e.endCoordinates.height));
+    const hide = Keyboard.addListener('keyboardDidHide', () => setKbPad(0));
+    return () => { show.remove(); hide.remove(); };
+  }, []);
+  // Once that height lands as padding, pull the composer into view — but only if
+  // it's the focused field, so editing a mid-list note doesn't yank to the bottom.
+  useEffect(() => {
+    if (kbPad > 0 && noteFocusedRef.current) scrollNotesIntoView();
+  }, [kbPad, scrollNotesIntoView]);
 
   // Reset transient state when the user opens a different challenge,
   // closes the view, or the challenge is unmounted by the parent.
@@ -2419,14 +2435,14 @@ const ChallengeDetailView = ({
               and edit textareas stay reachable when the keyboard is up,
               dragging the scroll never closes the keyboard, and an
               explicit tap on empty content does. */}
-          <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
+          <View style={{ flex: 1 }}>
           {/* Gesture-handler ScrollView — the +1 LOG button uses
               Gesture.Tap, which only negotiates cleanly with the
               native gesture system. Plain RN ScrollView would still
               steal touches via the JS responder under spam. */}
           <GHScrollView
             ref={scrollRef}
-            contentContainerStyle={{ padding: 16, paddingBottom: Math.max(insets.bottom, 24) + 80 }}
+            contentContainerStyle={{ padding: 16, paddingBottom: Math.max(insets.bottom, 24) + 80 + kbPad }}
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode="none"
@@ -2696,7 +2712,7 @@ const ChallengeDetailView = ({
               </View>
             </View>
           </GHScrollView>
-          </KeyboardAvoidingView>
+          </View>
         </SafeAreaView>
       </GestureHandlerRootView>
     </Modal>
