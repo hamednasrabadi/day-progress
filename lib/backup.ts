@@ -377,7 +377,7 @@ export async function exportBackup(opts?: { keys?: BackupKey[] }): Promise<{ ok:
 // + version, runs migrations if needed, returns the migrated payload. Caller
 // (the Settings UI) decides which slices to actually write back.
 export async function pickAndReadBackup(): Promise<
-  | { ok: true; payload: BackupPayload; envelope: BackupEnvelope; finalizeMedia?: () => Promise<void> }
+  | { ok: true; payload: BackupPayload; envelope: BackupEnvelope; finalizeMedia?: (onProgress?: (done: number, total: number) => void) => Promise<void> }
   | { ok: false; reason: string; cancelled?: boolean }
 > {
   try {
@@ -552,7 +552,7 @@ function validateAndMigrate(parsed: any): { ok: true; payload: BackupPayload; en
 // Open a .zip backup: read backup.json, validate/migrate, extract bundled media
 // into documentDirectory, and remap note URIs to the new local paths. Media
 // from a cancelled restore is harmless (orphan files the next restore reuses).
-async function readZipBackup(zipBase64: string): Promise<{ ok: true; payload: BackupPayload; envelope: BackupEnvelope; finalizeMedia: () => Promise<void> } | { ok: false; reason: string }> {
+async function readZipBackup(zipBase64: string): Promise<{ ok: true; payload: BackupPayload; envelope: BackupEnvelope; finalizeMedia: (onProgress?: (done: number, total: number) => void) => Promise<void> } | { ok: false; reason: string }> {
   try {
     const zip = await JSZip.loadAsync(zipBase64, { base64: true });
     const jsonEntry = zip.file('backup.json');
@@ -567,20 +567,25 @@ async function readZipBackup(zipBase64: string): Promise<{ ok: true; payload: Ba
     // voice memo and writing it to disk takes seconds on a media-heavy backup; doing
     // it during the read blocked the confirm dialog for seconds. The caller runs
     // finalizeMedia() ONLY after the user confirms, so a cancelled restore writes nothing.
-    const finalizeMedia = async () => {
+    const finalizeMedia = async (onProgress?: (done: number, total: number) => void) => {
       const dir = FileSystem.documentDirectory;
       if (!dir) return;
+      const entries = Object.values(zip.files).filter(e => !e.dir && e.name.startsWith('media/'));
+      const total = entries.length;
+      onProgress?.(0, total);
       const map: Record<string, string> = {};
-      for (const entry of Object.values(zip.files)) {
-        if (entry.dir || !entry.name.startsWith('media/')) continue;
+      let done = 0;
+      for (const entry of entries) {
         const fname = entry.name.slice('media/'.length);
-        if (!fname) continue;
-        try {
-          const fb64 = await entry.async('base64');
-          const dest = `${dir}${fname}`;
-          await FileSystem.writeAsStringAsync(dest, fb64, { encoding: FileSystem.EncodingType.Base64 });
-          map[fname] = dest;
-        } catch { /* skip a bad media entry */ }
+        if (fname) {
+          try {
+            const fb64 = await entry.async('base64');
+            const dest = `${dir}${fname}`;
+            await FileSystem.writeAsStringAsync(dest, fb64, { encoding: FileSystem.EncodingType.Base64 });
+            map[fname] = dest;
+          } catch { /* skip a bad media entry */ }
+        }
+        onProgress?.(++done, total);
       }
       remapNoteMedia(res.payload, map);
     };

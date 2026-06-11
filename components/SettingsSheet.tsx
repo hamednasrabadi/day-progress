@@ -62,10 +62,11 @@ export function SettingsSheet({
   // Transient backup status line + a restore confirmation holding the parsed
   // payload until the user okays the overwrite.
   const [backupNote, setBackupNote] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
-  const [pendingRestore, setPendingRestore] = useState<{ payload: any; exportedAt?: string; finalizeMedia?: () => Promise<void> } | null>(null);
-  // True while a confirmed restore extracts bundled media (a few seconds on a
-  // media-heavy .zip) — drives the "Restoring…" button state.
+  const [pendingRestore, setPendingRestore] = useState<{ payload: any; exportedAt?: string; finalizeMedia?: (onProgress?: (done: number, total: number) => void) => Promise<void> } | null>(null);
+  // Restore-in-progress state: `restoring` gates the dialog into a progress view;
+  // `restoreProgress` tracks media extraction (done / total files) for the bar.
   const [restoring, setRestoring] = useState(false);
+  const [restoreProgress, setRestoreProgress] = useState<{ done: number; total: number } | null>(null);
 
   // ── Backup ──
   const handleExport = async () => {
@@ -92,10 +93,12 @@ export function SettingsSheet({
   const confirmRestore = async () => {
     if (!pendingRestore || restoring) return;
     setRestoring(true);
+    setRestoreProgress(null);
     try {
       // Extract bundled media now (post-confirm) so a cancelled restore writes
       // nothing and the confirm dialog wasn't held up by it. No-op for a .json.
-      await pendingRestore.finalizeMedia?.();
+      // The progress callback drives the bar (done / total media files).
+      await pendingRestore.finalizeMedia?.((done, total) => setRestoreProgress({ done, total }));
       // One-tap full restore: every current slice. (Meta — unlock state, counters
       // — always rides along inside applyBackup regardless of the key list.)
       applyBackup(pendingRestore.payload, [...ALL_KEYS]);
@@ -105,6 +108,7 @@ export function SettingsSheet({
       setBackupNote({ kind: 'err', text: e?.message || 'Restore failed.' });
     } finally {
       setRestoring(false);
+      setRestoreProgress(null);
       setPendingRestore(null);
     }
   };
@@ -270,6 +274,16 @@ export function SettingsSheet({
               <Text style={{ color: theme.textSub, fontSize: 13, fontWeight: '600', lineHeight: 19, marginBottom: 18 }}>
                 This replaces your current data with everything in the file. Your unlock progress comes along too.
               </Text>
+              {restoring ? (
+                <View style={{ marginBottom: 16 }}>
+                  <View style={{ height: 8, borderRadius: 4, backgroundColor: theme.border, overflow: 'hidden', marginBottom: 8 }}>
+                    <View style={{ height: '100%', borderRadius: 4, backgroundColor: theme.textMain, width: `${restoreProgress && restoreProgress.total > 0 ? Math.round((restoreProgress.done / restoreProgress.total) * 100) : 100}%` }} />
+                  </View>
+                  <Text style={{ color: theme.textSub, fontSize: 12, fontWeight: '600', textAlign: 'center' }}>
+                    {restoreProgress && restoreProgress.total > 0 ? `Restoring media — ${restoreProgress.done} / ${restoreProgress.total}` : 'Restoring…'}
+                  </Text>
+                </View>
+              ) : null}
               <View style={{ flexDirection: 'row', gap: 8 }}>
                 <TouchableOpacity
                   onPress={() => setPendingRestore(null)}
