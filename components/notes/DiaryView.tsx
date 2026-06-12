@@ -270,11 +270,32 @@ export function DiaryView({
                     searchQuery.trim() ? (
                       <MarkdownContent text={note.content} theme={warmTheme} accent={C.accent} fontSize={16} lineHeight={25} highlight={searchQuery} />
                     ) : (() => {
-                      const stripped = stripAllMarkdown(note.content);
-                      const firstNonEmpty = stripped.split('\n').find(l => l.trim()) || stripped;
-                      const previewRtl = isRtl(lineDirectionText(firstNonEmpty));
+                      // Per-PARAGRAPH direction, mirroring RichTextContent in
+                      // notes.tsx: one Text per source line, each judging its
+                      // own direction. The old single-Text preview took its
+                      // direction from the first line only, so an entry that
+                      // opened with an English line dragged every Persian
+                      // paragraph under it to LTR-left. Budget mirrors the
+                      // Notes cards (first 4 source lines + "…"), with a
+                      // per-paragraph wrap cap so one long paragraph can't
+                      // flood the timeline; a single-paragraph entry keeps
+                      // the old 4-visual-line preview exactly.
+                      const lines = stripAllMarkdown(note.content).trim().split('\n');
+                      const display = lines.slice(0, 4);
+                      const hasMore = lines.length > 4;
+                      const single = display.length === 1;
                       return (
-                        <Text numberOfLines={4} style={{ fontFamily: SERIF, color: C.ink, fontSize: 16, lineHeight: 25, textAlign: previewRtl ? 'right' : 'left', writingDirection: previewRtl ? 'rtl' : 'ltr' }}>{stripped}</Text>
+                        <View>
+                          {display.map((line, li) => {
+                            const lineRtl = isRtl(lineDirectionText(line));
+                            return (
+                              <Text key={li} numberOfLines={single ? 4 : 2} style={{ fontFamily: SERIF, color: C.ink, fontSize: 16, lineHeight: 25, textAlign: lineRtl ? 'right' : 'left', writingDirection: lineRtl ? 'rtl' : 'ltr' }}>{line}</Text>
+                            );
+                          })}
+                          {hasMore ? (
+                            <Text style={{ fontFamily: SERIF, color: C.faint, fontSize: 16, lineHeight: 22, textAlign: isRtl(lineDirectionText(display[0] || '')) ? 'right' : 'left' }}>…</Text>
+                          ) : null}
+                        </View>
                       );
                     })()
                   ) : null}

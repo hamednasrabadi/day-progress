@@ -22,6 +22,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { Feather } from '@expo/vector-icons';
 import Animated, { FadeIn, FadeInUp } from 'react-native-reanimated';
+import { persianSafeInputStyle } from '../../lib/rtl';
 
 const SERIF = Platform.select({ ios: 'Georgia', android: 'serif', default: 'serif' }) as string;
 
@@ -163,9 +164,17 @@ export function MoodDiaryComposer({
                   <TouchableOpacity activeOpacity={0.7} onPress={() => setPromptBump(b => b + 1)}>
                     <Text style={{ fontFamily: SERIF, color: C.ink, fontSize: 23, lineHeight: 31, marginBottom: 18 }}>{prompt}</Text>
                   </TouchableOpacity>
+                  {/* Direction stays NEUTRAL on purpose — the same call as the
+                      Notes body editor (see the comment on its TextInput in
+                      notes.tsx): forcing one direction on a multiline input
+                      mis-anchors every opposite-direction paragraph, while
+                      neutral keeps Unicode BiDi flowing each paragraph's
+                      characters correctly. Per-paragraph ALIGNMENT happens on
+                      the reading surfaces (the DiaryView timeline + search's
+                      MarkdownContent) the moment the entry is kept. */}
                   <TextInput value={text} onChangeText={setText} placeholder="Start where you are…" placeholderTextColor={C.faint}
                     multiline autoFocus selectionColor={accent}
-                    style={{ fontFamily: SERIF, color: C.ink, fontSize: 19, lineHeight: 31, minHeight: 240, textAlignVertical: 'top' }} />
+                    style={[{ fontFamily: SERIF, color: C.ink, fontSize: 19, lineHeight: 31, minHeight: 240, textAlignVertical: 'top' }, persianSafeInputStyle]} />
                   <TouchableOpacity onPress={() => setPromptBump(b => b + 1)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={{ alignSelf: 'flex-start', marginTop: 10 }}>
                     <Text style={{ color: C.sub, fontSize: 13, fontWeight: '600' }}>ask me something else</Text>
                   </TouchableOpacity>
