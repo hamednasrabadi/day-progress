@@ -43,7 +43,6 @@ const META: Record<string, { icon: FeatherName; label: string }> = {
   todo: { icon: 'check-square', label: 'Tasks' },
   notes: { icon: 'file-text', label: 'Notes' },
   challenges: { icon: 'award', label: 'Challenges' },
-  lab: { icon: 'sliders', label: 'Lab' }, // DEV-SANDBOX: temporary; never commit, remove before shipping.
 };
 
 const TabButton = React.memo(function TabButton({ index, active, name, showLabel, isNew, focused, onPress, inactive, bg, accent }: { index: number; active: SharedValue<number>; name: string; showLabel: boolean; isNew: boolean; focused: boolean; onPress: () => void; inactive: string; bg: string; accent: string }) {
