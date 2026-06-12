@@ -246,6 +246,7 @@ function longestRun(dates: string[] = []): number {
   return best;
 }
 
+// eslint-disable-next-line react/display-name -- Swipeable render callback, not a component
 const makeRightActions = (theme: any, habitId: string, selectedDateStr: string, onAction: any, isFuture: boolean) => () => (
   <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', paddingRight: 10, gap: 10, width: 140, marginBottom: 12, opacity: isFuture ? 0.3 : 1 }}>
     <Pressable onPress={() => { if (isFuture) return; Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); onAction(habitId, 'rest', selectedDateStr); }} style={{ backgroundColor: theme.freeze, padding: 12, borderRadius: 12 }}><Feather name="coffee" size={18} color="#FFF" /></Pressable>
@@ -442,6 +443,14 @@ const HabitCard = React.memo(function HabitCard({ habit, selectedDateStr, todayC
     prev.habit.unit === next.habit.unit &&
     prev.habit.hasReminder === next.habit.hasReminder &&
     prev.habit.reminderTime === next.habit.reminderTime &&
+    prev.habit.status === next.habit.status &&
+    // The 30-day dot strip reads these arrays directly (not via the derived
+    // todayCount/status/streak props, which can all stay equal when a PAST
+    // day is edited). Store updates are immutable — a change always swaps the
+    // array — so reference equality is an exact, O(1) check.
+    prev.habit.history === next.habit.history &&
+    prev.habit.restDays === next.habit.restDays &&
+    prev.habit.skippedDays === next.habit.skippedDays &&
     prev.habit.completionNotes?.[prev.selectedDateStr] === next.habit.completionNotes?.[next.selectedDateStr] &&
     prev.currentStatus === next.currentStatus &&
     prev.todayCount === next.todayCount &&
