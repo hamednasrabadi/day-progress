@@ -1,19 +1,19 @@
 /**
- * DiaryView — chronological journal rendering of diary-kind notes.
+ * DiaryView — the diary's warm "Paper" reading surface.
  *
- * Triggered from the Notes tab's Diary toggle. Distinct UX from the regular
- * notes feed:
- *   - Vertical timeline, no card stacking; each entry shows full content.
- *   - Big date header per entry ("Today · May 1, 2026"; "Yesterday"; or the
- *     formatted date for older entries).
- *   - Inline media (images side-by-side, audio chip count) — diary entries
- *     are read in-place, not opened into a reader modal.
- *   - Tap an entry to edit; long-press for status actions (archive/trash).
+ * A different room from the Notes feed: cream by day / candle-lit by night,
+ * serif type, and a calm vertical reading flow instead of stacked cards. The top
+ * is a greeting + an inviting "today" door (→ the Mood-door composer); below,
+ * entries flow under big serif date headers, each a clean text block carrying its
+ * time, mood, and any photos/voice inline, set off by a mood-colored edge rather
+ * than a boxy card. "On This Day" turns one-time use into a ritual.
  *
- * Sorts purely by createdAt desc — simple chronological scroll, no grouping
- * by week/month. The date headers themselves provide enough rhythm.
+ * Sorted newest-first by the entry's own date (entryDate; createdAt for legacy
+ * entries). Search narrows by substring and expands matches to full markdown.
+ *
+ * Self-skinned (Paper palette from isDarkMode) so the diary keeps its identity
+ * regardless of the app theme — the Notes tab warms its own background to match.
  */
-
 import React, { useMemo } from 'react';
 import { Platform, Text, TouchableOpacity, View, ScrollView, Pressable } from 'react-native';
 import { Image } from 'expo-image';
@@ -25,8 +25,10 @@ import { AudioPlayer } from './AudioPlayer';
 import { isRtl } from '../../lib/rtl';
 import { lineDirectionText, stripAllMarkdown } from '../../lib/notesRichText';
 
-// Mirror of the mood lookup in notes.tsx — small enough to duplicate rather
-// than thread through props. Keep in sync if the picker palette changes.
+const SERIF = Platform.select({ ios: 'Georgia', android: 'serif', default: 'serif' }) as string;
+
+// Mirror of the mood lookup in notes.tsx — small enough to duplicate rather than
+// thread through props. Keep in sync if the picker palette changes.
 const MOOD_LOOKUP: Record<string, { label: string; icon: any; color: string }> = {
   'heart':      { label: 'Loved',  icon: 'heart',      color: '#F472B6' },
   'sun':        { label: 'Bright', icon: 'sun',        color: '#FACC15' },
@@ -35,23 +37,12 @@ const MOOD_LOOKUP: Record<string, { label: string; icon: any; color: string }> =
   'moon':       { label: 'Heavy',  icon: 'moon',       color: '#A78BFA' },
 };
 
-// Loose theme shape — DiaryView only uses the colors it actually paints, so
-// we don't pull in the full timelineTheme `Theme` (which includes fields like
-// freeze/isDark that the notes tab's local theme doesn't define).
-type Theme = {
-  bg: string;
-  surface: string;
-  border: string;
-  textMain: string;
-  textSub: string;
-};
-
 const GREGORIAN_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const SHAMSI_MONTHS = ['Farvardin','Ordibehesht','Khordad','Tir','Mordad','Shahrivar','Mehr','Aban','Azar','Dey','Bahman','Esfand'];
 const DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 
-// Same g2j the rest of notes.tsx uses — duplicated here so DiaryView is
-// drop-in without coupling to the parent file's helpers.
+// Same g2j the rest of notes.tsx uses — duplicated here so DiaryView is drop-in
+// without coupling to the parent file's helpers.
 function g2j(gy: number, gm: number, gd: number): [number, number, number] {
   const g_d_m = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
   const gy2 = gm > 2 ? gy + 1 : gy;
@@ -72,9 +63,7 @@ function startOfDay(ms: number): number {
   return d.getTime();
 }
 
-// "Today", "Yesterday", or a formatted date for older entries. Day-of-week is
-// added for the "this week" range (2–6 days back) since "5 days ago" is less
-// scannable than "Wednesday" when the entry's still in living memory.
+// "Today", "Yesterday", a weekday for this week, or a formatted date for older.
 function formatHeaderDate(ms: number, cal: CalendarSystem): string {
   const today = startOfDay(Date.now());
   const target = startOfDay(ms);
@@ -95,33 +84,49 @@ function formatHeaderDate(ms: number, cal: CalendarSystem): string {
 }
 
 function formatTimeOfDay(ms: number): string {
-  const d = new Date(ms);
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+  return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+function greeting(): string {
+  const h = new Date().getHours();
+  if (h < 12) return 'Good morning';
+  if (h < 18) return 'Good afternoon';
+  return 'Good evening';
+}
+
+// "Tuesday, 12 Jun" — the dateline under the greeting.
+function longToday(cal: CalendarSystem): string {
+  const d = new Date();
+  if (cal === 'shamsi') {
+    const [, jm, jd] = g2j(d.getFullYear(), d.getMonth() + 1, d.getDate());
+    return `${DAY_NAMES[d.getDay()]}, ${jd} ${SHAMSI_MONTHS[jm - 1]}`;
+  }
+  return `${DAY_NAMES[d.getDay()]}, ${d.getDate()} ${GREGORIAN_MONTHS[d.getMonth()]}`;
 }
 
 export function DiaryView({
-  notes, theme, isDarkMode, calSystem, onOpen, onLongPress, onCreate,
+  notes, isDarkMode, calSystem, onOpen, onLongPress, onCreate,
   activeAudioUri, setActiveAudioUri, searchQuery,
 }: {
   notes: Note[];
-  theme: Theme;
+  theme: { bg: string; surface: string; border: string; textMain: string; textSub: string };
   isDarkMode: boolean;
   calSystem: CalendarSystem;
   onOpen: (note: Note) => void;
   onLongPress: (note: Note) => void;
   onCreate: () => void;
-  // Audio coordination — lifted to the parent (notes.tsx) so a memo playing
-  // inline in the diary pauses anything playing in the editor and vice versa.
   activeAudioUri: string | null;
   setActiveAudioUri: (uri: string | null) => void;
-  // Live search filter from the Notes header — empty string means show all.
   searchQuery: string;
 }) {
-  // Strict chronological order by the entry's "about" date (entryDate when
-  // set; falls back to createdAt for legacy entries written before
-  // backdating support landed). Newest at the top so the diary opens on
-  // "Today" by default. Optional search filter narrows the list by case-
-  // insensitive substring on title or content.
+  // Warm "Paper" skin — cream by day, candle-lit by night.
+  const C = isDarkMode
+    ? { bg: '#17130E', raised: '#211B13', ink: '#EAE1D2', sub: '#9A8E7B', faint: '#6E6453', line: '#2E2619', accent: '#D9913F' }
+    : { bg: '#F4EEE1', raised: '#FBF7EE', ink: '#2A2420', sub: '#6F6555', faint: '#A89D8B', line: '#E4DBC9', accent: '#A6552B' };
+  const onAccent = isDarkMode ? '#17130E' : '#FFFFFF';
+  // Theme shape MarkdownContent / AudioPlayer expect — mapped to the warm palette.
+  const warmTheme = { bg: C.bg, surface: C.raised, border: C.line, textMain: C.ink, textSub: C.sub };
+
   const dateOf = (n: Note) => n.entryDate ?? n.createdAt;
   const sorted = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -131,368 +136,171 @@ export function DiaryView({
     return [...base].sort((a, b) => dateOf(b) - dateOf(a));
   }, [notes, searchQuery]);
 
-  // "On This Day" — entries written on this calendar date in previous years.
-  // Day One's most-praised feature. Cheap to compute since entries are already
-  // date-keyed. Computed BEFORE the empty-state early return below so the hook
-  // count can't change when the diary flips between empty and non-empty (React:
-  // "rendered fewer hooks than expected"). Match by month + day (ignoring year).
+  // "On This Day" — entries on this calendar date in previous years. Computed
+  // BEFORE the empty-state early return so the hook count is stable.
   const onThisDay = useMemo(() => {
     if (searchQuery.trim()) return [];
     const now = new Date();
-    const tm = now.getMonth();
-    const td = now.getDate();
-    const ty = now.getFullYear();
+    const tm = now.getMonth(); const td = now.getDate(); const ty = now.getFullYear();
     return sorted
-      .filter(n => {
-        const d = new Date(dateOf(n));
-        return d.getMonth() === tm && d.getDate() === td && d.getFullYear() < ty;
-      })
-      .map(n => {
-        const d = new Date(dateOf(n));
-        const yearsAgo = ty - d.getFullYear();
-        return { note: n, yearsAgo };
-      });
+      .filter(n => { const d = new Date(dateOf(n)); return d.getMonth() === tm && d.getDate() === td && d.getFullYear() < ty; })
+      .map(n => ({ note: n, yearsAgo: ty - new Date(dateOf(n)).getFullYear() }));
   }, [sorted, searchQuery]);
 
   if (sorted.length === 0) {
     const isFiltered = searchQuery.trim().length > 0;
     return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 32 }}>
-        <Feather name={isFiltered ? 'search' : 'book-open'} size={56} color={theme.textSub} style={{ opacity: 0.15, marginBottom: 18 }} />
-        <Text style={{ color: theme.textMain, fontSize: 18, fontWeight: '900', marginBottom: 8, letterSpacing: -0.3 }}>
+      <View style={{ flex: 1, backgroundColor: C.bg, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 34 }}>
+        <Feather name={isFiltered ? 'search' : 'book-open'} size={50} color={C.faint} style={{ opacity: 0.5, marginBottom: 18 }} />
+        <Text style={{ fontFamily: SERIF, color: C.ink, fontSize: 22, marginBottom: 8 }}>
           {isFiltered ? 'No matches.' : 'Your diary is empty.'}
         </Text>
-        <Text style={{ color: theme.textSub, fontSize: 13, fontWeight: '600', textAlign: 'center', lineHeight: 20, marginBottom: 28 }}>
-          {isFiltered ? 'Try a different search.' : 'Capture a moment from today — a thought, a photo, a voice memo. Future-you will be glad you did.'}
+        <Text style={{ color: C.sub, fontSize: 14, fontWeight: '500', textAlign: 'center', lineHeight: 21, marginBottom: 26 }}>
+          {isFiltered ? 'Try a different search.' : 'Start with one line about today. Future-you will be glad you did.'}
         </Text>
         {!isFiltered && (
-          <TouchableOpacity
-            onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); onCreate(); }}
-            style={{ backgroundColor: theme.textMain, paddingHorizontal: 28, paddingVertical: 14, borderRadius: 100 }}
-          >
-            <Text style={{ color: theme.bg, fontSize: 14, fontWeight: '900', letterSpacing: 0.3 }}>Write today&apos;s entry</Text>
+          <TouchableOpacity onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); onCreate(); }}
+            style={{ backgroundColor: C.accent, paddingHorizontal: 26, paddingVertical: 14, borderRadius: 100 }}>
+            <Text style={{ color: onAccent, fontSize: 14, fontWeight: '900', letterSpacing: 0.3 }}>Write today&apos;s entry</Text>
           </TouchableOpacity>
         )}
       </View>
     );
   }
 
-  // "Today" pull-to-write affordance — only when there's no entry for today
-  // yet, and we're not in search mode (search results shouldn't be muddied by
-  // a write-card sitting at top). Tapping creates a fresh diary entry. Same
-  // empty-state hook on the home of every diary app worth using.
-  const todayDate = new Date();
-  const todayMs = (() => { const d = new Date(todayDate); d.setHours(0, 0, 0, 0); return d.getTime(); })();
-  const hasTodayEntry = sorted.some(n => {
-    const d = new Date(dateOf(n));
-    d.setHours(0, 0, 0, 0);
-    return d.getTime() === todayMs;
-  });
-  const showTodayCard = !searchQuery.trim() && !hasTodayEntry;
+  const todayMs = startOfDay(Date.now());
+  const hasTodayEntry = sorted.some(n => startOfDay(dateOf(n)) === todayMs);
+  const showHome = !searchQuery.trim();
 
   return (
-    <ScrollView
-      contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 4, paddingBottom: 120 }}
-      showsVerticalScrollIndicator={false}
-    >
-      {/* "On This Day" — past entries written on the same calendar date in
-          previous years. The hook that turns a one-time-use diary into a
-          ritual. Hidden in search mode and when there are no past entries
-          for today's date. */}
-      {onThisDay.length > 0 && (
-        <View style={{ marginBottom: 22 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-            <Feather name="rotate-ccw" size={13} color={theme.textSub} />
-            <Text style={{ color: theme.textSub, fontSize: 11, fontWeight: '700', letterSpacing: 0.5, textTransform: 'uppercase' }}>
-              On this day
-            </Text>
-            <View style={{ flex: 1, height: 1, backgroundColor: theme.border, marginLeft: 4 }} />
-          </View>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ gap: 12, paddingRight: 4 }}
-          >
-            {onThisDay.map(({ note, yearsAgo }) => {
-              const titleRtl = isRtl(lineDirectionText(note.title || ''));
-              const previewSnippet = (() => {
-                const stripped = (note.content || '').split('\n').find(l => l.trim()) || '';
-                return stripped.replace(/==\{[^}]+\}/g, '').replace(/[*=]/g, '').slice(0, 120);
-              })();
-              const snippetRtl = isRtl(lineDirectionText(previewSnippet));
-              return (
-                <Pressable
-                  key={note.id}
-                  onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); onOpen(note); }}
-                  style={{
-                    width: 240,
-                    backgroundColor: theme.surface,
-                    borderRadius: 18,
-                    borderWidth: 1,
-                    borderColor: theme.border,
-                    paddingVertical: 16,
-                    paddingHorizontal: 18,
-                  }}
-                >
-                  <Text style={{ color: theme.textSub, fontSize: 10, fontWeight: '900', letterSpacing: 0.6, textTransform: 'uppercase', marginBottom: 6 }}>
-                    {yearsAgo === 1 ? '1 year ago' : `${yearsAgo} years ago`}
-                  </Text>
-                  {note.title ? (
-                    <Text
-                      numberOfLines={1}
-                      style={{
-                        color: theme.textMain,
-                        fontSize: 15,
-                        fontWeight: '800',
-                        letterSpacing: -0.2,
-                        marginBottom: 4,
-                        textAlign: titleRtl ? 'right' : 'left',
-                        writingDirection: titleRtl ? 'rtl' : 'ltr',
-                      }}
-                    >
-                      {note.title}
-                    </Text>
-                  ) : null}
-                  {previewSnippet ? (
-                    <Text
-                      numberOfLines={2}
-                      style={{
-                        color: theme.textSub,
-                        fontSize: 13,
-                        lineHeight: 18,
-                        textAlign: snippetRtl ? 'right' : 'left',
-                        writingDirection: snippetRtl ? 'rtl' : 'ltr',
-                      }}
-                    >
-                      {previewSnippet}
-                    </Text>
-                  ) : null}
-                </Pressable>
-              );
-            })}
-          </ScrollView>
-        </View>
-      )}
-
-      {showTodayCard && (
-        <Pressable
-          onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); onCreate(); }}
-          style={{
-            backgroundColor: theme.surface,
-            borderRadius: 22,
-            borderWidth: 1,
-            borderStyle: 'dashed',
-            borderColor: theme.border,
-            paddingVertical: 22,
-            paddingHorizontal: 24,
-            marginBottom: 22,
-            // Slight cream wash so it reads as "fresh page" rather than
-            // "another card." Both light/dark surfaces already lean warm
-            // enough; we lean a touch further with a low-opacity overlay.
-          }}
-        >
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-            <View style={{ flex: 1 }}>
-              <Text style={{ color: theme.textSub, fontSize: 11, fontWeight: '700', letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: 6 }}>
-                Today
-              </Text>
-              <Text
-                style={{
-                  color: theme.textMain,
-                  fontSize: 17,
-                  fontWeight: '700',
-                  letterSpacing: -0.3,
-                }}
-              >
-                What&apos;s on your mind?
-              </Text>
-            </View>
-            <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: theme.textMain, justifyContent: 'center', alignItems: 'center', marginLeft: 12 }}>
-              <Feather name="edit-3" size={18} color={theme.bg} />
-            </View>
-          </View>
-        </Pressable>
-      )}
-      {sorted.map((note, idx) => {
-        const dateMs = dateOf(note);
-        const headerLabel = formatHeaderDate(dateMs, calSystem);
-        const timeStr = formatTimeOfDay(dateMs);
-        const prevHeader = idx > 0 ? formatHeaderDate(dateOf(sorted[idx - 1]), calSystem) : null;
-        const showHeader = headerLabel !== prevHeader;
-        const hasImages = (note.imageUris?.length ?? 0) > 0;
-        const hasAudio = (note.audio?.length ?? 0) > 0;
-        return (
-          <View key={note.id} style={{ marginBottom: 22 }}>
-            {showHeader && (
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 10, marginTop: idx > 0 ? 14 : 0 }}>
-                <Text style={{ color: theme.textMain, fontSize: 22, fontWeight: '900', letterSpacing: -0.5 }}>
-                  {headerLabel}
-                </Text>
-                {note.mood && MOOD_LOOKUP[note.mood] ? (
-                  (() => {
-                    const m = MOOD_LOOKUP[note.mood!];
-                    return (
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 100, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.border }}>
-                        <Feather name={m.icon} size={11} color={m.color} />
-                        <Text style={{ color: theme.textSub, fontSize: 11, fontWeight: '800', letterSpacing: 0.2 }}>{m.label}</Text>
-                      </View>
-                    );
-                  })()
-                ) : null}
-                <View style={{ flex: 1, height: 1, backgroundColor: theme.border, marginLeft: 4 }} />
-              </View>
-            )}
-            <Pressable
-              onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); onOpen(note); }}
-              onLongPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); onLongPress(note); }}
-              delayLongPress={400}
-              // Diary "page" styling — softer corners, warmer cream-toned
-              // surface, gentler border. Different visual register from the
-              // notes-tab card so users feel "this is for reading", not "this
-              // is a memo." Uses the same theme tokens so dark/light still
-              // work, just shifted to a less austere shape.
-              style={{
-                backgroundColor: theme.surface,
-                borderRadius: 22,
-                borderWidth: 1,
-                borderColor: theme.border,
-                paddingVertical: 22,
-                paddingHorizontal: 24,
-                shadowColor: '#000',
-                shadowOpacity: 0.04,
-                shadowRadius: 8,
-                shadowOffset: { width: 0, height: 2 },
-                elevation: 1,
-              }}
+    <View style={{ flex: 1, backgroundColor: C.bg }}>
+      <ScrollView contentContainerStyle={{ paddingHorizontal: 22, paddingTop: 6, paddingBottom: 120 }} showsVerticalScrollIndicator={false}>
+        {/* ── HOME: greeting + the door into today ── */}
+        {showHome && (
+          <View style={{ marginBottom: 6 }}>
+            <Text style={{ fontFamily: SERIF, fontStyle: 'italic', color: C.sub, fontSize: 15, marginBottom: 2 }}>{greeting()}.</Text>
+            <Text style={{ color: C.faint, fontSize: 12, fontWeight: '700', letterSpacing: 0.5, marginBottom: 16 }}>{longToday(calSystem)}</Text>
+            <TouchableOpacity
+              onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); onCreate(); }}
+              activeOpacity={0.85}
+              style={{ backgroundColor: C.raised, borderRadius: 22, borderWidth: 1, borderColor: C.line, paddingVertical: 22, paddingHorizontal: 22, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}
             >
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: note.title ? 8 : (note.content ? 12 : 0) }}>
-                <Text style={{ color: theme.textSub, fontSize: 11, fontWeight: '700', letterSpacing: 0.4 }}>
-                  {timeStr}
-                </Text>
-                {note.isLocked && <Feather name="lock" size={11} color={theme.textSub} />}
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: C.accent, fontSize: 11, fontWeight: '900', letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 8 }}>Today</Text>
+                <Text style={{ fontFamily: SERIF, color: C.ink, fontSize: 20 }}>{hasTodayEntry ? 'Add another moment' : 'What’s on your mind?'}</Text>
               </View>
-              {note.title ? (
-                (() => {
-                  const titleRtl = isRtl(lineDirectionText(note.title || ''));
-                  return (
-                    <Text
-                      style={{
-                        color: theme.textMain,
-                        fontSize: 18,
-                        fontWeight: '900',
-                        letterSpacing: -0.3,
-                        marginBottom: note.content ? 8 : 0,
-                        textAlign: titleRtl ? 'right' : 'left',
-                        writingDirection: titleRtl ? 'rtl' : 'ltr',
-                      }}
-                      numberOfLines={2}
-                    >
-                      {note.title}
-                    </Text>
-                  );
-                })()
-              ) : null}
-              {note.content ? (
-                searchQuery.trim() ? (
-                  // Search mode → expand to full markdown so the user can read
-                  // the matched context without tapping into the reader. The
-                  // `highlight` prop paints the active query yellow inside the
-                  // body. Each line keeps its own direction.
-                  <MarkdownContent
-                    text={note.content}
-                    theme={theme}
-                    accent="#8B5CF6"
-                    fontSize={15}
-                    lineHeight={23}
-                    highlight={searchQuery}
-                  />
-                ) : (
-                  // Collapsed preview — single Text node with stripped
-                  // markdown, truly capped at 4 VISUAL lines (not source
-                  // lines, so a long first line can't blow up the card).
-                  // Direction taken from the first non-empty line so the
-                  // common case (a single-language entry) reads correctly;
-                  // mixed-direction snippets fall back to natural BiDi
-                  // within a 4-line preview, which is fine for browsing.
-                  (() => {
-                    const stripped = stripAllMarkdown(note.content);
-                    const firstNonEmpty = stripped.split('\n').find(l => l.trim()) || stripped;
-                    const previewRtl = isRtl(lineDirectionText(firstNonEmpty));
-                    return (
-                      <Text
-                        numberOfLines={4}
-                        style={{
-                          color: theme.textMain,
-                          fontSize: 15,
-                          fontWeight: '500',
-                          lineHeight: 23,
-                          textAlign: previewRtl ? 'right' : 'left',
-                          writingDirection: previewRtl ? 'rtl' : 'ltr',
-                        }}
-                      >
-                        {stripped}
-                      </Text>
-                    );
-                  })()
-                )
-              ) : null}
-              {hasImages && (
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={{ gap: 8, marginTop: 12 }}
-                >
-                  {note.imageUris!.map((uri, i) => (
-                    <Image
-                      key={`${uri}-${i}`}
-                      source={{ uri }}
-                      contentFit="cover"
-                      style={{ width: 120, height: 120, borderRadius: 12, backgroundColor: theme.border }}
-                    />
-                  ))}
-                </ScrollView>
-              )}
-              {hasAudio && (
-                // Horizontal scroll — same treatment as photos. Stacked
-                // vertical players ate ~50px per memo; horizontal lets a
-                // 5-memo entry sit in one row instead of five. Each memo
-                // keeps its full pill (play / progress / duration) so the
-                // user can listen without tapping through to the reader.
-                // Custom names render as a compact label above the pill,
-                // single-line ellipsized so a long name can't blow up the
-                // card. Tap stops at the player — Pressable below is the
-                // entry-open trigger; AudioPlayer's own onPress handles
-                // playback.
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={{ gap: 10, marginTop: 12 }}
-                >
-                  {note.audio!.map((memo) => (
-                    <View key={memo.id} style={{ minWidth: 160 }}>
-                      {memo.name ? (
-                        <Text
-                          numberOfLines={1}
-                          style={{ color: theme.textSub, fontSize: 11, fontWeight: '700', marginBottom: 6, maxWidth: 220 }}
-                        >
-                          {memo.name}
-                        </Text>
-                      ) : null}
-                      <AudioPlayer
-                        uri={memo.uri}
-                        durationStr={memo.duration}
-                        theme={theme}
-                        activeAudioUri={activeAudioUri}
-                        setActiveAudioUri={setActiveAudioUri}
-                      />
-                    </View>
-                  ))}
-                </ScrollView>
-              )}
-            </Pressable>
+              <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center', marginLeft: 12 }}>
+                <Feather name="edit-3" size={18} color={onAccent} />
+              </View>
+            </TouchableOpacity>
           </View>
-        );
-      })}
-    </ScrollView>
+        )}
+
+        {/* ── ON THIS DAY ── the ritual hook */}
+        {onThisDay.length > 0 && (
+          <View style={{ marginTop: 26, marginBottom: 6 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+              <Feather name="rotate-ccw" size={13} color={C.sub} />
+              <Text style={{ color: C.sub, fontSize: 11, fontWeight: '800', letterSpacing: 1, textTransform: 'uppercase' }}>On this day</Text>
+              <View style={{ flex: 1, height: 1, backgroundColor: C.line, marginLeft: 4 }} />
+            </View>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 12, paddingRight: 4 }}>
+              {onThisDay.map(({ note, yearsAgo }) => {
+                const titleRtl = isRtl(lineDirectionText(note.title || ''));
+                const snippet = ((note.content || '').split('\n').find(l => l.trim()) || '').replace(/==\{[^}]+\}/g, '').replace(/[*=]/g, '').slice(0, 120);
+                const snippetRtl = isRtl(lineDirectionText(snippet));
+                return (
+                  <Pressable key={note.id} onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); onOpen(note); }}
+                    style={{ width: 240, backgroundColor: C.raised, borderRadius: 18, borderWidth: 1, borderColor: C.line, paddingVertical: 16, paddingHorizontal: 18 }}>
+                    <Text style={{ color: C.accent, fontSize: 10, fontWeight: '900', letterSpacing: 0.6, textTransform: 'uppercase', marginBottom: 6 }}>
+                      {yearsAgo === 1 ? '1 year ago' : `${yearsAgo} years ago`}
+                    </Text>
+                    {note.title ? (
+                      <Text numberOfLines={1} style={{ fontFamily: SERIF, color: C.ink, fontSize: 15, marginBottom: 4, textAlign: titleRtl ? 'right' : 'left', writingDirection: titleRtl ? 'rtl' : 'ltr' }}>{note.title}</Text>
+                    ) : null}
+                    {snippet ? (
+                      <Text numberOfLines={2} style={{ fontFamily: SERIF, color: C.sub, fontSize: 13, lineHeight: 19, textAlign: snippetRtl ? 'right' : 'left', writingDirection: snippetRtl ? 'rtl' : 'ltr' }}>{snippet}</Text>
+                    ) : null}
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          </View>
+        )}
+
+        {/* ── THE TIMELINE ── */}
+        <View style={{ marginTop: showHome ? 26 : 4 }}>
+          {sorted.map((note, idx) => {
+            const dateMs = dateOf(note);
+            const headerLabel = formatHeaderDate(dateMs, calSystem);
+            const timeStr = formatTimeOfDay(dateMs);
+            const prevHeader = idx > 0 ? formatHeaderDate(dateOf(sorted[idx - 1]), calSystem) : null;
+            const showHeader = headerLabel !== prevHeader;
+            const hasImages = (note.imageUris?.length ?? 0) > 0;
+            const hasAudio = (note.audio?.length ?? 0) > 0;
+            const m = note.mood ? MOOD_LOOKUP[note.mood] : null;
+            return (
+              <View key={note.id} style={{ marginBottom: 22 }}>
+                {showHeader && (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: idx > 0 ? 16 : 0, marginBottom: 12 }}>
+                    <Text style={{ fontFamily: SERIF, color: C.ink, fontSize: 23 }}>{headerLabel}</Text>
+                    <View style={{ flex: 1, height: 1, backgroundColor: C.line }} />
+                  </View>
+                )}
+                <Pressable
+                  onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); onOpen(note); }}
+                  onLongPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); onLongPress(note); }}
+                  delayLongPress={400}
+                  // A mood-colored left edge sets each entry off without a boxy
+                  // card — calmer to read, and the diary's own register.
+                  style={{ borderLeftWidth: 2, borderLeftColor: m ? m.color : C.line, paddingLeft: 16 }}
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: note.title ? 6 : (note.content ? 10 : 0) }}>
+                    <Text style={{ fontFamily: SERIF, color: C.sub, fontSize: 13 }}>{timeStr}</Text>
+                    {note.isLocked && <Feather name="lock" size={11} color={C.faint} />}
+                    {m ? <Text style={{ color: C.faint, fontSize: 12, fontWeight: '700' }}>· {m.label}</Text> : null}
+                  </View>
+                  {note.title ? (() => {
+                    const titleRtl = isRtl(lineDirectionText(note.title || ''));
+                    return (
+                      <Text style={{ fontFamily: SERIF, color: C.ink, fontSize: 19, marginBottom: note.content ? 6 : 0, textAlign: titleRtl ? 'right' : 'left', writingDirection: titleRtl ? 'rtl' : 'ltr' }} numberOfLines={2}>{note.title}</Text>
+                    );
+                  })() : null}
+                  {note.content ? (
+                    searchQuery.trim() ? (
+                      <MarkdownContent text={note.content} theme={warmTheme} accent={C.accent} fontSize={16} lineHeight={25} highlight={searchQuery} />
+                    ) : (() => {
+                      const stripped = stripAllMarkdown(note.content);
+                      const firstNonEmpty = stripped.split('\n').find(l => l.trim()) || stripped;
+                      const previewRtl = isRtl(lineDirectionText(firstNonEmpty));
+                      return (
+                        <Text numberOfLines={4} style={{ fontFamily: SERIF, color: C.ink, fontSize: 16, lineHeight: 25, textAlign: previewRtl ? 'right' : 'left', writingDirection: previewRtl ? 'rtl' : 'ltr' }}>{stripped}</Text>
+                      );
+                    })()
+                  ) : null}
+                  {hasImages && (
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, marginTop: 12 }}>
+                      {note.imageUris!.map((uri, i) => (
+                        <Image key={`${uri}-${i}`} source={{ uri }} contentFit="cover" style={{ width: 120, height: 120, borderRadius: 12, backgroundColor: C.line }} />
+                      ))}
+                    </ScrollView>
+                  )}
+                  {hasAudio && (
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10, marginTop: 12 }}>
+                      {note.audio!.map((memo) => (
+                        <View key={memo.id} style={{ minWidth: 160 }}>
+                          {memo.name ? <Text numberOfLines={1} style={{ color: C.sub, fontSize: 11, fontWeight: '700', marginBottom: 6, maxWidth: 220 }}>{memo.name}</Text> : null}
+                          <AudioPlayer uri={memo.uri} durationStr={memo.duration} theme={warmTheme} activeAudioUri={activeAudioUri} setActiveAudioUri={setActiveAudioUri} />
+                        </View>
+                      ))}
+                    </ScrollView>
+                  )}
+                </Pressable>
+              </View>
+            );
+          })}
+        </View>
+      </ScrollView>
+    </View>
   );
 }

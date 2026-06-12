@@ -13,6 +13,7 @@ import { CAPSULE_CHANNEL_ID } from "../../lib/notifChannels";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useFocusEffect } from "expo-router";
 import { DiaryView } from "../../components/notes/DiaryView";
+import { MoodDiaryComposer } from "../../components/notes/MoodDiaryComposer";
 import { AudioPlayer } from "../../components/notes/AudioPlayer";
 import { CalendarPicker } from "../../components/CalendarPicker";
 import { isRtl, rtlInputStyle, rtlTextStyle, persianSafeInputStyle } from "../../lib/rtl";
@@ -1079,6 +1080,67 @@ export default function NotesScreen() {
     setReadingNote(fresh || note);
   }, []);
 
+  // ── MOOD-DOOR DIARY COMPOSER ──────────────────────────────────────────────
+  // The diary's new-entry + edit surface (components/notes/MoodDiaryComposer):
+  // pick a feeling → write on a warm page → "Kept." `initial` null = new entry;
+  // a Note = edit (its photos/audio survive — we merge onto the existing note).
+  // Only reachable inside diaryMode, which is already biometric-gated, so there's
+  // no extra auth here.
+  const [moodComposer, setMoodComposer] = useState<{ initial: Note | null } | null>(null);
+  const openMoodComposer = useCallback((initial: Note | null) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setMoodComposer({ initial });
+  }, []);
+
+  // Recent moods (most-recent first) feed the composer's "lately" strip — the
+  // payoff that makes picking a feeling worth it.
+  const recentDiaryMoods = useMemo(() =>
+    [...diaryNotes]
+      .sort((a, b) => (b.entryDate ?? b.createdAt) - (a.entryDate ?? a.createdAt))
+      .map(n => n.mood)
+      .filter((m): m is string => !!m)
+      .slice(0, 12),
+  [diaryNotes]);
+
+  // Format an entry's date the way the rest of the diary does (gregorian / shamsi).
+  const formatDiaryDate = useCallback((ms: number) => {
+    const d = new Date(ms);
+    if (calendarType === 'shamsi') {
+      const [, jm, jd] = g2j(d.getFullYear(), d.getMonth() + 1, d.getDate());
+      return `${jd} ${SHAMSI_MONTHS[jm - 1]}`;
+    }
+    return `${d.getDate()} ${GREGORIAN_MONTHS[d.getMonth()]}`;
+  }, [calendarType]);
+
+  // Persist a mood-door entry. New → fresh diary Note + unlock ticks; edit →
+  // merge onto the existing note so photos/audio/entryDate survive untouched.
+  const persistDiaryEntry = useCallback((payload: { mood: string | null; content: string }) => {
+    const target = moodComposer?.initial ?? null;
+    const now = Date.now();
+    const existing = target ? useAppStore.getState().notes.find(n => n.id === target.id) : null;
+    if (existing) {
+      addOrUpdateNote({ ...existing, content: payload.content, mood: payload.mood ?? undefined, kind: 'diary', updatedAt: now });
+    } else {
+      addOrUpdateNote({
+        id: now.toString(), title: '', content: payload.content, color: DEFAULT_COLOR,
+        createdAt: now, isPinned: false, isLocked: false, order: -now, status: 'active',
+        imageUris: [], audio: [], kind: 'diary', mood: payload.mood ?? undefined, entryDate: now,
+      });
+      const st = useAppStore.getState();
+      st.incrementTotalNotesCreated();
+      st.incrementDiaryEntriesCreated();
+    }
+  }, [moodComposer, addOrUpdateNote]);
+
+  // Stable identity for the composer's `initial` so its open-time re-seed effect
+  // doesn't re-fire every render and wipe what the user is typing mid-entry.
+  const composerInitial = useMemo(
+    () => moodComposer?.initial
+      ? { id: moodComposer.initial.id, mood: moodComposer.initial.mood, content: moodComposer.initial.content }
+      : null,
+    [moodComposer],
+  );
+
   const handleGroupLongPress = useCallback((group: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setRenameText(group);
@@ -1391,7 +1453,7 @@ export default function NotesScreen() {
     }, [theme, calendarType, updateNoteStatus, toggleNotePin, deleteForever, handleOpenCapsule, handleOpenNote, searchQuery]);
 
   return (
-    <GestureHandlerRootView style={{ flex: 1, backgroundColor: theme.bg }}>
+    <GestureHandlerRootView style={{ flex: 1, backgroundColor: diaryMode ? (isDarkMode ? '#17130E' : '#F4EEE1') : theme.bg }}>
       <BottomSheetModalProvider>
         <SafeAreaView style={{ flex: 1 }} edges={["top"]}>
           
@@ -1478,7 +1540,7 @@ export default function NotesScreen() {
               </TouchableOpacity>
               </Animated.View>
               ) : null}
-              <TouchableOpacity onPress={() => openNoteSheet(undefined, diaryMode)} hitSlop={15}><Feather name="plus-circle" size={22} color={theme.textMain} /></TouchableOpacity>
+              <TouchableOpacity onPress={() => (diaryMode ? openMoodComposer(null) : openNoteSheet(undefined, false))} hitSlop={15}><Feather name="plus-circle" size={22} color={theme.textMain} /></TouchableOpacity>
             </View>
           </View>
 
@@ -1529,14 +1591,12 @@ export default function NotesScreen() {
                 theme={theme}
                 isDarkMode={isDarkMode}
                 calSystem={calendarType}
-                // Tap → open the existing read-only reader. Static Text
-                // components handle BiDi (Persian punctuation, mixed-language
-                // lines) more reliably than the editor's TextInputs, so
-                // diary entries read correctly without the punctuation-flip
-                // behavior. Edit is behind the reader's pencil button.
-                onOpen={(n) => handleOpenNote(n)}
+                // Tap → the Mood-door composer in edit mode (warm page, mood +
+                // text; photos/audio on the entry are preserved). Long-press →
+                // Edit / Photos & voice (full editor) / Delete. New → the doorway.
+                onOpen={(n) => openMoodComposer(n)}
                 onLongPress={(n) => openDiaryActionsFor(n)}
-                onCreate={() => openNoteSheet(undefined, true)}
+                onCreate={() => openMoodComposer(null)}
                 activeAudioUri={activeAudioUri}
                 setActiveAudioUri={setActiveAudioUri}
                 searchQuery={searchQuery}
@@ -2079,12 +2139,25 @@ export default function NotesScreen() {
                   onPress={() => {
                     const target = diaryActionTarget;
                     setDiaryActionTarget(null);
-                    if (target) setTimeout(() => openNoteSheet(target), 50);
+                    if (target) setTimeout(() => openMoodComposer(target), 50);
                   }}
                   style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 16, paddingHorizontal: 16, borderRadius: 14, backgroundColor: theme.bg, borderWidth: 1, borderColor: theme.border, marginBottom: 10 }}
                 >
                   <Feather name="edit-3" size={18} color={theme.textMain} />
                   <Text style={{ color: theme.textMain, fontWeight: '800', fontSize: 15 }}>Edit</Text>
+                </TouchableOpacity>
+                {/* Full editor — the path to add/replace photos & voice memos, which
+                    the Mood-door composer (text + feeling) intentionally leaves out. */}
+                <TouchableOpacity
+                  onPress={() => {
+                    const target = diaryActionTarget;
+                    setDiaryActionTarget(null);
+                    if (target) setTimeout(() => openNoteSheet(target), 50);
+                  }}
+                  style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 16, paddingHorizontal: 16, borderRadius: 14, backgroundColor: theme.bg, borderWidth: 1, borderColor: theme.border, marginBottom: 10 }}
+                >
+                  <Feather name="image" size={18} color={theme.textMain} />
+                  <Text style={{ color: theme.textMain, fontWeight: '800', fontSize: 15 }}>Photos &amp; voice</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   onPress={() => {
@@ -2120,6 +2193,18 @@ export default function NotesScreen() {
               </View>
             </View>
           </Modal>
+
+          {/* MOOD-DOOR DIARY COMPOSER — the new-entry + edit surface for the diary. */}
+          <MoodDiaryComposer
+            visible={!!moodComposer}
+            initial={composerInitial}
+            isDark={isDarkMode}
+            moods={MOOD_OPTIONS}
+            recentMoods={recentDiaryMoods}
+            dateLabel={formatDiaryDate(moodComposer?.initial?.entryDate ?? moodComposer?.initial?.createdAt ?? Date.now())}
+            onClose={() => setMoodComposer(null)}
+            onSubmit={persistDiaryEntry}
+          />
 
           {/* DIARY BACKDATE PICKER — sets editorEntryDate from a calendar.
               Past dates are exactly the point (writing about a day after the
