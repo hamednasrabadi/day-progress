@@ -51,11 +51,13 @@ export async function preloadSounds(): Promise<void> {
   } catch {}
 }
 
-export function playSfx(name: SfxName): void {
+export function playSfx(name: SfxName, rate = 1): void {
   if (!useAppStore.getState().soundEnabled) return;
   const mod = FILES[name];
   if (mod == null) return;
-  Audio.Sound.createAsync(mod, { shouldPlay: true })
+  // rate !== 1 pitch-shifts (shouldCorrectPitch:false) — ADHD Mode climbs the wood
+  // knock as the cleared pile grows. Default rate 1 leaves every other sfx unchanged.
+  Audio.Sound.createAsync(mod, { shouldPlay: true, rate, shouldCorrectPitch: false })
     .then(({ sound }) => {
       sound.setOnPlaybackStatusUpdate((st: any) => {
         if (st.isLoaded && st.didJustFinish) sound.unloadAsync().catch(() => {});

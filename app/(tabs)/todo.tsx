@@ -24,6 +24,7 @@ import { FEATURE_IDS, useIsUnlocked, useIsNew, isUnlocked } from '../../lib/unlo
 import { useTabBarMetrics } from '../../lib/tabBarMetrics';
 import { PALETTE, PROJECT_PALETTE, DEFAULT_COLOR, NEUTRAL_COLOR } from '../../lib/palette';
 import { ColorPicker } from '../../components/ColorPicker';
+import { AdhdMode } from '../../components/AdhdMode';
 import { playSfx } from '../../lib/sounds';
 
 LogBox.ignoreLogs(['setLayoutAnimationEnabledExperimental', 'SafeAreaView has been deprecated']);
@@ -709,10 +710,8 @@ export default function TodoScreen() {
   const [dwHistoryVisible, setDwHistoryVisible] = useState(false);
   const [dwHistoryExpanded, setDwHistoryExpanded] = useState<string | null>(null);
 
-  // ── ADHD mode state ──
+  // ── ADHD mode state ── (the full experience lives in components/AdhdMode)
   const [adhdVisible, setAdhdVisible] = useState(false);
-  const [adhdCelebrating, setAdhdCelebrating] = useState(false);
-  const [adhdJustDone, setAdhdJustDone] = useState<string>('');
 
   // Task Form States
   const [txt, setTxt] = useState(''); const [notes, setNotes] = useState(''); const [color, setColor] = useState(DEFAULT_COLOR);
@@ -1576,31 +1575,23 @@ export default function TodoScreen() {
 
   const openAdhdMode = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    setAdhdJustDone('');
     setAdhdVisible(true);
   }, []);
 
   const closeAdhdMode = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setAdhdVisible(false);
-    setAdhdJustDone('');
   }, []);
 
-  const completeAdhdItem = useCallback((kind: 'task' | 'habit', id: string, title: string) => {
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  // The real mutation only — AdhdMode owns the motion, sound, haptics, and the
+  // session pile. (`title` is part of the onComplete contract, but unused here.)
+  const completeAdhdItem = useCallback((kind: 'task' | 'habit', id: string) => {
     if (kind === 'task') {
       const cur = useAppStore.getState().tasks;
       setTasks(cur.map(t => t.id === id ? { ...t, completed: true, completedAt: Date.now() } : t));
     } else {
       toggleHabitAction(id, 'done', todayStr());
     }
-    setAdhdJustDone(title);
-    setAdhdCelebrating(true);
-    setTimeout(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy), 150);
-    setTimeout(() => {
-      setAdhdCelebrating(false);
-      setAdhdJustDone('');
-    }, 1400);
   }, [setTasks, toggleHabitAction]);
 
   // ─── FLASHLIST DATA PREP ───
@@ -1682,7 +1673,7 @@ export default function TodoScreen() {
   const adhdPool = useMemo(() => {
     type AdhdItem = { kind: 'task' | 'habit'; id: string; title: string; color: string };
     const items: AdhdItem[] = [];
-    displayTasks.slice(0, 10).forEach(t => items.push({ kind: 'task', id: t.id, title: t.text, color: t.color }));
+    displayTasks.filter(t => !t.completed).slice(0, 10).forEach(t => items.push({ kind: 'task', id: t.id, title: t.text, color: t.color }));
     todayHabits
       .filter(h => h.history.filter(d => d === today).length < h.targetCount)
       .forEach(h => items.push({ kind: 'habit', id: h.id, title: h.title, color: h.color }));
@@ -3487,66 +3478,8 @@ export default function TodoScreen() {
             );
           })()}
 
-          {/* ADHD Mode Modal */}
-          <Modal visible={adhdVisible} animationType="fade" transparent={false} onRequestClose={closeAdhdMode} statusBarTranslucent>
-            <View style={{ flex: 1, backgroundColor: '#000' }}>
-              <SafeAreaView style={{ flex: 1 }} edges={['top', 'bottom']}>
-                <View style={{ flex: 1, paddingHorizontal: 32, paddingVertical: 24 }}>
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-                    <TouchableOpacity onPress={closeAdhdMode} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
-                      <Text style={{ color: '#444', fontSize: 11, fontWeight: '900', letterSpacing: 2 }}>EXIT</Text>
-                    </TouchableOpacity>
-                    <Text style={{ color: '#444', fontSize: 11, fontWeight: '900', letterSpacing: 2 }}>
-                      {adhdPool.length > 0 ? `${adhdPool.length} LEFT` : 'CLEAR'}
-                    </Text>
-                  </View>
-
-                  <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-                    {adhdPool.length === 0 ? (
-                      <View style={{ alignItems: 'center', gap: 16 }}>
-                        <Text style={{ color: '#FFF', fontSize: 32, fontWeight: '900', letterSpacing: -1 }}>Nothing left.</Text>
-                        <Text style={{ color: '#666', fontSize: 14, fontWeight: '600' }}>You&apos;re clear. Take a breath.</Text>
-                        <TouchableOpacity
-                          onPress={closeAdhdMode}
-                          style={{ marginTop: 32, paddingVertical: 14, paddingHorizontal: 32, borderRadius: 14, borderWidth: 1, borderColor: '#333' }}
-                        >
-                          <Text style={{ color: '#FFF', fontSize: 13, fontWeight: '900', letterSpacing: 1.5 }}>EXIT</Text>
-                        </TouchableOpacity>
-                      </View>
-                    ) : (
-                      (() => {
-                        const item = adhdPool[0];
-                        return (
-                          <View style={{ alignItems: 'center', gap: 24, width: '100%' }}>
-                            <Text style={{ color: '#666', fontSize: 11, fontWeight: '900', letterSpacing: 3 }}>
-                              {item.kind === 'task' ? 'TASK' : 'HABIT'}
-                            </Text>
-                            <Text style={{ color: '#FFF', fontSize: 32, fontWeight: '900', letterSpacing: -1, textAlign: 'center', lineHeight: 38, paddingHorizontal: 16 }} numberOfLines={4}>
-                              {item.title}
-                            </Text>
-                            <TouchableOpacity
-                              onPress={() => completeAdhdItem(item.kind, item.id, item.title)}
-                              activeOpacity={0.8}
-                              style={{ marginTop: 24, paddingVertical: 28, paddingHorizontal: 56, borderRadius: 28, backgroundColor: item.color, alignItems: 'center', minWidth: 220 }}
-                            >
-                              <Text style={{ color: '#FFF', fontSize: 18, fontWeight: '900', letterSpacing: 2 }}>DONE</Text>
-                            </TouchableOpacity>
-                          </View>
-                        );
-                      })()
-                    )}
-                  </View>
-                </View>
-
-                {adhdCelebrating && (
-                  <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: '#FFF', opacity: 0.92, justifyContent: 'center', alignItems: 'center', padding: 48 }]}>
-                    <Text style={{ color: '#000', fontSize: 28, fontWeight: '900', letterSpacing: -0.5, textAlign: 'center' }}>{adhdJustDone}</Text>
-                    <Text style={{ color: '#000', fontSize: 12, fontWeight: '900', letterSpacing: 4, marginTop: 12 }}>DONE</Text>
-                  </View>
-                )}
-              </SafeAreaView>
-            </View>
-          </Modal>
+          {/* ADHD Mode — one thing at a time; completions drop onto a pile (components/AdhdMode). */}
+          <AdhdMode visible={adhdVisible} pool={adhdPool} onComplete={completeAdhdItem} onClose={closeAdhdMode} />
 
           </View>
         </SafeAreaView>
