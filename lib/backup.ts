@@ -288,6 +288,39 @@ function remapNoteMedia(payload: BackupPayload, map: Record<string, string>): vo
   }
 }
 
+// Can't stat (exotic scheme / transient FS error) → keep the ref rather than
+// destroy a pointer that may still be good. getInfoAsync returns
+// { exists: false } for plain missing files, so the catch is rare.
+const mediaFileExists = async (uri: string): Promise<boolean> => {
+  try { return (await FileSystem.getInfoAsync(uri)).exists; }
+  catch { return true; }
+};
+
+// After remap, drop refs to media that didn't make it to this device: a zip
+// entry that failed extraction, or a file the backup never bundled and that
+// doesn't exist locally (cross-device restore of an older / partial archive).
+// Left in place, each one is a permanent broken image / dead voice memo on
+// the restored note. ZIP path only — a .json restore bundles nothing, and on
+// a same-device restore its refs point at live files we must not strip.
+async function scrubMissingNoteMedia(payload: BackupPayload): Promise<void> {
+  for (const k of NOTE_KEYS_WITH_MEDIA) {
+    const arr = (payload as any)[k];
+    if (!Array.isArray(arr)) continue;
+    for (const n of arr) {
+      if (Array.isArray(n?.imageUris) && n.imageUris.length > 0) {
+        const kept: string[] = [];
+        for (const u of n.imageUris) { if (typeof u === 'string' && await mediaFileExists(u)) kept.push(u); }
+        if (kept.length !== n.imageUris.length) n.imageUris = kept;
+      }
+      if (Array.isArray(n?.audio) && n.audio.length > 0) {
+        const kept: any[] = [];
+        for (const m of n.audio) { if (typeof m?.uri === 'string' && await mediaFileExists(m.uri)) kept.push(m); }
+        if (kept.length !== n.audio.length) n.audio = kept;
+      }
+    }
+  }
+}
+
 export async function exportBackup(opts?: { keys?: BackupKey[] }): Promise<{ ok: true; path: string } | { ok: false; reason: string }> {
   try {
     const state = useAppStore.getState() as any;
@@ -588,6 +621,7 @@ async function readZipBackup(zipBase64: string): Promise<{ ok: true; payload: Ba
         onProgress?.(++done, total);
       }
       remapNoteMedia(res.payload, map);
+      await scrubMissingNoteMedia(res.payload);
     };
     return { ok: true, payload: res.payload, envelope: res.envelope, finalizeMedia };
   } catch (e: any) {
