@@ -343,7 +343,7 @@ const TaskCard = React.memo(function TaskCard({
     <View
       style={{ paddingHorizontal: indentInFolder ? 16 : 0, paddingBottom: indentInFolder && !isExp && task.completed ? 8 : 0, marginTop: isFirstInFolder ? 16 : 0 }}
     >
-      <Swipeable renderLeftActions={renderLeftActions} renderRightActions={renderRightActions} onSwipeableOpen={dir => { if (dir === 'right') onTrash(task); else if (dir === 'left') onArchive(task); }}>
+      <Swipeable key={task.id} renderLeftActions={renderLeftActions} renderRightActions={renderRightActions} onSwipeableOpen={dir => { if (dir === 'right') onTrash(task); else if (dir === 'left') onArchive(task); }}>
         <View style={{ marginBottom: 12, backgroundColor: theme.surface, borderRadius: 16, borderWidth: 1, borderLeftWidth: promiseStripeWidth, borderColor: theme.border, borderLeftColor: isBroken ? theme.textSub : (isDead ? deadColor : task.color), overflow: 'hidden', opacity: task.completed ? 0.65 : 1 }}>
           <TouchableOpacity activeOpacity={0.85} onLongPress={() => onEdit(task)} delayLongPress={250} onPress={() => onExpand(task.id)} style={{ flexDirection: 'row', alignItems: 'center', padding: 18 }}>
             <TouchableOpacity onPress={() => onCheck(task.id)} hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }} style={{ marginRight: 16 }}>
@@ -1768,13 +1768,16 @@ export default function TodoScreen() {
 
         active.forEach((t, i) => {
           const urgency = getUrgency(t); // pre-computed once per task per feedData run
-          flatData.push({ type: 'task', id: t.id, task: t, urgency, isExp: expandedId === t.id, isSeed: seedTasks.some(s => s.id === t.id), delayIdx: i, isFirstInFolder: i === 0, indentInFolder: true });
+          // Key is project-scoped: a task due today appears BOTH here and in the
+          // Today section above (same t.id), so a bare t.id collides → one renders
+          // blank. The card still reads item.task.id; this only namespaces the list key.
+          flatData.push({ type: 'task', id: `p_${p.id}_${t.id}`, task: t, urgency, isExp: expandedId === t.id, isSeed: seedTasks.some(s => s.id === t.id), delayIdx: i, isFirstInFolder: i === 0, indentInFolder: true });
         });
         if (comp.length > 0) {
           flatData.push({ type: 'project_comp_header', id: `p_ch_${p.id}` });
           comp.forEach(t => {
             const urgency = getUrgency(t);
-            flatData.push({ type: 'task', id: t.id, task: t, urgency, isExp: false, isSeed: false, delayIdx: 0, isFirstInFolder: false, indentInFolder: true });
+            flatData.push({ type: 'task', id: `p_${p.id}_${t.id}`, task: t, urgency, isExp: false, isSeed: false, delayIdx: 0, isFirstInFolder: false, indentInFolder: true });
           });
         }
         if (!seedInfo?.isSeed) flatData.push({ type: 'project_add_btn', id: `p_add_${p.id}`, project: p });
@@ -2136,6 +2139,11 @@ export default function TodoScreen() {
                 ref={listRef}
                 data={feedData}
                 keyExtractor={item => item.id}
+                // Heterogeneous feed (headers, tiles, tasks, project rows…): without
+                // getItemType FlashList recycles a cell across types, which can paint
+                // the first row blank + untouchable (and survives reload). One pool
+                // per type fixes it.
+                getItemType={item => item.type}
                 renderItem={renderFlashListItem}
                 // @ts-ignore
                 estimatedItemSize={120}
