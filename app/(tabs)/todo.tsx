@@ -23,6 +23,7 @@ import { useAppStore, Task, Project, SubTask, Priority, CalendarSystem, RecurTyp
 import { FEATURE_IDS, useIsUnlocked, useIsNew, isUnlocked } from '../../lib/unlocks';
 import { useTabBarMetrics } from '../../lib/tabBarMetrics';
 import { PALETTE, PROJECT_PALETTE, DEFAULT_COLOR, NEUTRAL_COLOR } from '../../lib/palette';
+import { JS_DAY_SHORT, calculateNextOccurrence } from '../../lib/recurrence';
 import { ColorPicker } from '../../components/ColorPicker';
 import { AdhdMode } from '../../components/AdhdMode';
 import { playSfx } from '../../lib/sounds';
@@ -44,7 +45,6 @@ const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
 // Color palettes now live in lib/palette.ts (single source of truth).
 const REPEAT_OPTIONS = ['none', 'daily', 'weekly', 'monthly', 'custom'] as RecurType[];
 const JS_DAY_MAP: Record<number, string> = { 0: 'Sunday', 1: 'Monday', 2: 'Tuesday', 3: 'Wednesday', 4: 'Thursday', 5: 'Friday', 6: 'Saturday' };
-const JS_DAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const SHAMSI_MONTHS = ['Farvardin', 'Ordibehesht', 'Khordad', 'Tir', 'Mordad', 'Shahrivar', 'Mehr', 'Aban', 'Azar', 'Dey', 'Bahman', 'Esfand'];
 const GREGORIAN_MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 
@@ -117,31 +117,8 @@ const formatDisplayDate = (dStr: string, cal: CalendarSystem) => {
   return dStr;
 };
 
-// ─── NEXT WAKE DATE ───
-function calculateNextOccurrence(task: Task): string {
-  const today = new Date(); const date = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-  if (task.recurType === 'daily') { date.setDate(date.getDate() + 1); }
-  else if (task.recurType === 'weekly' && task.recurDays && task.recurDays.length > 0) {
-    const targetDayIndex = JS_DAY_SHORT.indexOf(task.recurDays[0]); let daysUntil = targetDayIndex - date.getDay();
-    if (daysUntil <= 0) daysUntil += 7; date.setDate(date.getDate() + daysUntil);
-  } else if (task.recurType === 'monthly' && task.recurDayOfMonth) {
-    let nextMonth = date.getMonth() + 1; let year = date.getFullYear();
-    if (nextMonth > 11) { nextMonth = 0; year += 1; }
-    // Clamp to actual days-in-month — without this, "31st of every month" on
-    // a Feb/Apr/Jun/Sep/Nov rollover causes setFullYear to spill into the
-    // following month (Feb 31 → Mar 3), and subsequent recurrences then
-    // anchor off the rolled date and drift permanently. With the clamp,
-    // months without 31 land on their last day instead.
-    const daysInTarget = new Date(year, nextMonth + 1, 0).getDate();
-    const day = Math.min(task.recurDayOfMonth, daysInTarget);
-    date.setFullYear(year, nextMonth, day);
-  } else if (task.recurType === 'custom' && task.recurDays && task.recurDays.length > 0) {
-    let found = false;
-    for (let i = 1; i <= 7; i++) { date.setDate(date.getDate() + 1); if (task.recurDays.includes(JS_DAY_SHORT[date.getDay()])) { found = true; break; } }
-    if (!found) date.setDate(date.getDate() + 1);
-  } else { date.setDate(date.getDate() + 7); }
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-}
+// ─── NEXT WAKE DATE ─── calculateNextOccurrence moved to lib/recurrence.ts
+// (single source of truth, exercisable from Node — scripts/verify-recurrence.mjs).
 
 // ─── URGENCY & AUTO-SORTING ───
 function getUrgency(t: Task): UrgencyLevel {
@@ -3349,7 +3326,7 @@ export default function TodoScreen() {
                     <Text style={{ color: '#FFF', fontWeight: '900', fontSize: 14 }}>Yes — I completed it</Text>
                   </TouchableOpacity>
                   <TouchableOpacity onPress={() => breakPromise(promiseCheckTask)} style={{ paddingVertical: 14, borderRadius: 12, alignItems: 'center', backgroundColor: theme.bg, borderWidth: 1, borderColor: theme.border, marginBottom: 6 }}>
-                    <Text style={{ color: theme.textMain, fontWeight: '800', fontSize: 14 }}>No — I didn't</Text>
+                    <Text style={{ color: theme.textMain, fontWeight: '800', fontSize: 14 }}>No — I didn&apos;t</Text>
                   </TouchableOpacity>
                   <TouchableOpacity onPress={() => setPromiseCheckOpen(false)} style={{ paddingVertical: 10, alignItems: 'center' }}>
                     <Text style={{ color: theme.textSub, fontWeight: '700', fontSize: 13 }}>Ask me later</Text>
