@@ -27,6 +27,7 @@ import { documentDirectory, writeAsStringAsync, readAsStringAsync, EncodingType 
 import * as Sharing from 'expo-sharing';
 import JSZip from 'jszip';
 import type { Note } from '../store/useAppStore';
+import { isStillSealed } from './capsule';
 
 function pad(n: number): string {
   return n < 10 ? `0${n}` : `${n}`;
@@ -96,7 +97,7 @@ function renderNoteMarkdown(note: Note): string {
   return lines.join('\n');
 }
 
-function renderReadme(notes: Note[], scope: ExportScope): string {
+function renderReadme(notes: Note[], scope: ExportScope, sealedHidden: number): string {
   const total = notes.length;
   const diaryCount = notes.filter(n => n.kind === 'diary').length;
   const noteCount = total - diaryCount;
@@ -111,6 +112,9 @@ function renderReadme(notes: Note[], scope: ExportScope): string {
     `- Total entries: **${total}**`,
     scope === 'all' ? `- Notes: ${noteCount} · Diary entries: ${diaryCount}` : `- ${scope === 'diary' ? 'Diary' : 'Notes'}: ${total}`,
     `- Media files: **${mediaTotal}**`,
+    // Say it out loud rather than silently shrinking the export — the user
+    // should know the capsules exist and will ride along once unlocked.
+    ...(sealedHidden > 0 ? [`- Sealed capsules not included (still locked): **${sealedHidden}** — export again after they unlock.`] : []),
     '',
     '## Format',
     '',
@@ -139,17 +143,23 @@ export async function exportNotesAsBundle(notes: Note[], scope: ExportScope = 'a
     const canShare = await Sharing.isAvailableAsync();
     if (!canShare) return { ok: false, reason: 'Sharing is not available on this device.' };
 
-    const filtered = notes.filter(n => {
+    const inScope = notes.filter(n => {
       if (n.status === 'trash') return false;
       if (scope === 'diary') return n.kind === 'diary';
       if (scope === 'notes') return n.kind !== 'diary';
       return true;
     });
+    // A still-sealed capsule stays sealed in exports too — the one-tap zip
+    // must not be a side door that reads a time capsule before its date (or
+    // an event capsule before its challenge completes). Counted, not silent:
+    // the bundle README states how many were held back.
+    const sealedHidden = inScope.filter(n => isStillSealed(n)).length;
+    const filtered = inScope.filter(n => !isStillSealed(n));
     const dateOf = (n: Note) => (n.kind === 'diary' ? (n.entryDate ?? n.createdAt) : n.createdAt);
     filtered.sort((a, b) => dateOf(b) - dateOf(a));
 
     const zip = new JSZip();
-    zip.file('README.md', renderReadme(filtered, scope));
+    zip.file('README.md', renderReadme(filtered, scope, sealedHidden));
 
     // Track media filenames we've already added so duplicates across
     // entries (same image attached to multiple notes — possible with

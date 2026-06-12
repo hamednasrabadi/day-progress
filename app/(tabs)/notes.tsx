@@ -19,7 +19,9 @@ import { CalendarPicker } from "../../components/CalendarPicker";
 import { isRtl, rtlInputStyle, rtlTextStyle, persianSafeInputStyle } from "../../lib/rtl";
 import { stripInlineMarkdown, stripAllMarkdown, lineDirectionText } from "../../lib/notesRichText";
 import { exportNotesAsMarkdown } from "../../lib/notesExport";
+import { getUnlockMoment } from "../../lib/capsule";
 import {
+  AppState,
   BackHandler,
   Keyboard,
   LayoutAnimation,
@@ -148,18 +150,10 @@ const formatDuration = (millis: number) => {
 
 const getDaysUntil = (ms: number) => Math.ceil((ms - Date.now()) / 86400000);
 
-// Resolve a sealed note's unlock moment as a timestamp. Prefers unlockDateStr
-// (calendar-date, re-anchored to local midnight in the current timezone) over
-// the legacy unlockDate timestamp — that way capsules sealed in one timezone
-// still unlock at midnight wall-clock time after the user travels.
+// getUnlockMoment now lives in lib/capsule.ts (imported above) — the export
+// path needs the same answer, and a drifting twin predicate is how a capsule
+// could leak into an export early.
 const CAPSULE_NOTIF_PREFIX = 'capsule-unlock-';
-const getUnlockMoment = (note: { unlockDateStr?: string; unlockDate?: number }): number => {
-  if (note.unlockDateStr) {
-    const [y, m, d] = note.unlockDateStr.split('-').map(Number);
-    if (!isNaN(y) && !isNaN(m) && !isNaN(d)) return new Date(y, m - 1, d).getTime();
-  }
-  return note.unlockDate || 0;
-};
 
 // eslint-disable-next-line react/display-name -- Swipeable render callback, not a component
 const makeLeftActions = (theme: Theme, status: NoteStatus) => (p: any, d: RNAnimated.AnimatedInterpolation<any>) => {
@@ -634,6 +628,23 @@ export default function NotesScreen() {
   const diaryLocked = useAppStore(s => s.diaryLocked);
   const setDiaryLocked = useAppStore(s => s.setDiaryLocked);
   const [diarySettingsVisible, setDiarySettingsVisible] = useState(false);
+  // App-level blur: the focus-effect cleanup below covers tab switches, but
+  // not the home button / app switcher — without this, a locked diary left
+  // open stayed readable when the phone came back from the background. Drop
+  // the cached auth and re-lock the moment the app backgrounds. 'background'
+  // only, NOT 'inactive': 'inactive' fires for the iOS app-switcher swipe,
+  // control centre, and the biometric prompt itself, which would re-lock the
+  // diary mid-authentication. (A system picker launched from the diary
+  // composer backgrounds the app on Android — the composer modal itself stays
+  // mounted; only the diary list behind it re-locks.)
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (s) => {
+      if (s !== 'background') return;
+      diaryAuthedRef.current = false;
+      if (useAppStore.getState().diaryLocked) setDiaryMode(false);
+    });
+    return () => sub.remove();
+  }, []);
 
   // Interaction States
   const [viewingImages, setViewingImages] = useState<{ uris: string[]; index: number; } | null>(null);
