@@ -38,29 +38,30 @@ import { playSfx } from '../lib/sounds';
 // Matches the Timeline original — intent labels stay short and directive.
 const INTENT_LABEL_MAX = 200;
 
-// Add N days to a YYYY-MM-DD string (local calendar), returning YYYY-MM-DD.
-// Used to derive "real tomorrow" from today so the editable window is keyed to
-// the actual next day, not a selection artifact.
+// Add N days to a YYYY-MM-DD string, returning YYYY-MM-DD. Used to derive
+// "real tomorrow" from today so the editable window is keyed to the actual
+// next day, not a selection artifact. Runs on UTC day-numbers (the same trick
+// as getFormatDateStr / diffInDays in the habits tab) so a DST-shortened
+// local day can never skip or repeat a date.
 function addDaysStr(dateStr: string, n: number): string {
   const [y, m, d] = dateStr.split('-').map(Number);
-  const dt = new Date(y, m - 1, d);
-  dt.setDate(dt.getDate() + n);
-  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+  return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
 }
 
 // Weekday labels for a YYYY-MM-DD string, used to title the +2 / +3 day chips
 // (e.g. "WED") and the add-modal copy (e.g. "Wed"). Fixed English arrays so the
 // label is predictable regardless of device locale — the Habits day strip
-// renders Gregorian weekday abbreviations the same way.
+// renders Gregorian weekday abbreviations the same way. UTC construction for
+// the same DST-proofing as addDaysStr above.
 const WEEKDAY_ABBR = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'] as const;
 function weekdayAbbr(dateStr: string): string {
   const [y, m, d] = dateStr.split('-').map(Number);
-  return WEEKDAY_ABBR[new Date(y, m - 1, d).getDay()];
+  return WEEKDAY_ABBR[new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
 }
 const WEEKDAY_TITLE = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
 function weekdayTitle(dateStr: string): string {
   const [y, m, d] = dateStr.split('-').map(Number);
-  return WEEKDAY_TITLE[new Date(y, m - 1, d).getDay()];
+  return WEEKDAY_TITLE[new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
 }
 
 export function IntentPanel({
