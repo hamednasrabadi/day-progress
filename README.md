@@ -1,6 +1,6 @@
-# Day-Progress
+# Dawn
 
-> **Working title.** A cross-platform mobile productivity app that brings habits, tasks, notes, and milestone challenges into a single integrated workflow - built with React Native, Expo, and TypeScript.
+> A cross-platform mobile productivity app that brings habits, tasks, notes, and milestone challenges into a single integrated workflow - built with React Native, Expo, and TypeScript. Named for the hook at its core: every day is a fresh start. *(Formerly "Day-Progress" - the repo name and internal storage keys keep the old slug.)*
 
 > **Status:** Beta - actively developing.
 >
@@ -16,7 +16,7 @@ You'll need to allow installation from unknown sources on your device the first 
 
 Most productivity apps focus on one thing. A habit tracker. A todo list. A note-taker. A goal-setter. Switching between them costs friction, and they never share context - your tasks don't know about your habits, your habits don't know about your goals.
 
-Day-Progress puts them under one roof, with a shared data layer so they actually talk to each other. Your challenges advance when you complete the habits linked to them. Your tasks carry a commitment ritual ("Promise") that leaves a permanent mark when broken. Your end-of-week reflection lands in your notes. **Habits is the home screen** - the calm anchor the app opens to - and everything else grows out from there.
+Dawn puts them under one roof, with a shared data layer so they actually talk to each other. Your challenges advance when you complete the habits linked to them. Your tasks carry a commitment ritual ("Promise") that leaves a permanent mark when broken. Your end-of-week reflection lands in your notes. **Habits is the home screen** - the calm anchor the app opens to - and everything else grows out from there.
 
 The app also **reveals itself over time.** Rather than dropping every feature on a brand-new user, surfaces unlock as you actually use it (see [Progressive Unlock](#progressive-unlock)).
 
@@ -24,17 +24,17 @@ It's built for **English and Persian (Farsi)** with full RTL handling, and ships
 
 ## The Four Tabs
 
-The app opens on **Habits**, and the bar runs **Habits → Tasks → Challenges → Notes** (plus a dev-only Art sandbox).
+The app opens on **Habits**, and the bar runs **Habits → Tasks → Challenges → Notes**.
 
 ### 🔁 Habits (home)
 The anchor of the app, built around a **Strength Score** - a single 0-100 number per habit that's the source of truth for the whole tab:
 
 | Event | Effect |
 |---|---|
-| Completion | **+5** (or **+7.5** if score < 50 - hidden comeback bonus) |
-| Miss / skip | −8 |
-| Rest day 1 in a row | 0 (rest is free) |
-| Rest days 2 → 5+ in a row | −2, −4, −6, **−8** (rest becomes equivalent to running away) |
+| Completion | **+5** (or **+7.5** comeback rate - only for a habit that has reached 50 and slipped back under) |
+| Miss | **−6**, but the first miss each week is silently forgiven |
+| Skip (deliberate) | **−6**, no weekly grace - a skip is a choice |
+| Rest days in a row | 0 → −2 → −4 → **−6** (caps at a miss's cost; the rest-streak resets weekly, so the first rest of every week is free) |
 
 Plus:
 - **Daily target** - quantitative or duration-based completion threshold per habit.
@@ -84,8 +84,8 @@ A note-taking surface that goes well past plain text:
 - **Markdown formatting** with inline text highlighting.
 - **Audio memos** - record voice notes inline with text and images.
 - **Image attachments** with a zoomable viewer.
-- **Biometric locks** - protect individual notes with Face ID / fingerprint.
-- **Sealed notes (time capsules)** - write something today that unlocks at a future date you set.
+- **Biometric locks** - gate individual notes behind Face ID / fingerprint. *(Honest scope: this is an in-app visibility gate - note content is not yet encrypted at rest. On-device encryption is on the roadmap.)*
+- **Sealed notes (time capsules)** - write something today that unlocks at a future date you set. Exports hold still-sealed capsules back until their date, so the zip isn't a side door.
 - **Snapshot history** - every note keeps a timeline of past versions.
 - **Templates** for repeatable note structures.
 - **Tags** for cross-note organization and filtering.
@@ -98,7 +98,7 @@ A note-taking surface that goes well past plain text:
 
 ## Progressive Unlock
 
-Day-Progress doesn't hand a new user everything at once. Features reveal themselves as you use the app - a quiet "whisper" bar announces each unlock, a small dot marks what's new, and tabs like Challenges only appear once you've put in a few days. A first-launch intro sets the frame. Around day 30 a "depth map" lays out everything the app contains.
+Dawn doesn't hand a new user everything at once. Features reveal themselves as you use the app - a quiet "whisper" toast announces each unlock, a small dot marks what's new, and tabs like Challenges only appear once you've put in a few days. A first-launch intro sets the frame. Around day 30 a "depth map" lays out everything the app contains.
 
 Under the hood it's a small data-driven engine (`lib/unlocks.ts` + `lib/unlockTriggers.ts`): unlock conditions are evaluated against primitive counters in the store via narrow Zustand selectors, so the root layout only re-renders when a counter actually crosses a threshold - gating lives in data, not hardcoded per screen.
 
@@ -106,7 +106,7 @@ Under the hood it's a small data-driven engine (`lib/unlocks.ts` + `lib/unlockTr
 
 A few things worth pointing out for anyone reviewing the code:
 
-- **Versioned schema migrations.** The Zustand store carries a `migrate` function (currently **v7**) that reshapes persisted MMKV data across releases: renaming unlock keys, backfilling new challenge fields (cadence / links / ledger), stripping cut slices (Timeline, standalone reminders), and converting the old `isDarkMode` boolean into the 3-way `themeMode`. A `scripts/verify-persist-migration.mjs` check guards it.
+- **Versioned schema migrations.** The Zustand store carries a `migrate` function (currently **v9**) that reshapes persisted MMKV data across releases: renaming unlock keys, backfilling new challenge fields (cadence / links / ledger), stripping cut slices (Timeline, standalone reminders), and converting the old `isDarkMode` boolean into the 3-way `themeMode`. `npm run verify` guards it - plain-Node checks for the migration transform and the task-recurrence date math (month rollover, day-31 clamp, year wrap).
 - **One theme system, three palettes.** `lib/timelineTheme.ts`'s `getTheme(themeMode)` is the single palette source; the React Navigation theme, the native window background, and every tab read from it, so a theme switch is coherent everywhere - and tab switches never flash the default white background.
 - **Single-source-of-truth scoring.** `lib/habitScore.ts` exists because the Challenges tab needs habit strength without importing the Habits tab - pulled out specifically to keep heavy UI imports off other tabs.
 - **Data-driven progressive unlock.** Feature gating is computed from store counters (`lib/unlocks.ts`), not branched per-screen, so adding a gate is a config change.
@@ -143,8 +143,7 @@ day-progress/
 │       ├── habits.tsx            # Habits - the home screen
 │       ├── todo.tsx              # Tasks
 │       ├── challenges.tsx        # Challenges
-│       ├── notes.tsx             # Notes
-│       └── art.tsx               # dev-only visual sandbox (__DEV__ gated)
+│       └── notes.tsx             # Notes
 ├── components/
 │   ├── AnimatedTabBar.tsx            # custom animated footer
 │   ├── SettingsSheet.tsx            # global settings (themes, end-of-week, backup)
@@ -160,6 +159,8 @@ day-progress/
 │   └── notes/                       # Notes UI (DiaryView, AudioPlayer, MarkdownContent)
 ├── lib/
 │   ├── habitScore.ts                # single-source-of-truth habit scoring
+│   ├── recurrence.ts                # task next-occurrence engine (Node-checked)
+│   ├── capsule.ts                   # sealed-note unlock math (shared by UI + export)
 │   ├── unlocks.ts                   # progressive-unlock engine (features, thresholds)
 │   ├── unlockTriggers.ts            # evaluates unlock conditions from store counters
 │   ├── weeklyReview.ts              # end-of-week review window logic
@@ -175,7 +176,7 @@ day-progress/
 │   └── timelineTheme.ts             # 3-mode color system (getTheme)
 ├── store/
 │   └── useAppStore.ts            # Zustand store - all persisted state + migrations
-├── scripts/                      # verify-persist-migration, find-unused-deps, etc.
+├── scripts/                      # verify-persist-migration, verify-recurrence, find-unused-deps, etc.
 ├── assets/                       # fonts, images, icons
 └── wake-plugin.js                # custom Expo config plugin
 ```
@@ -195,7 +196,9 @@ npx expo run:android   # or run:ios
 
 ## Screenshots
 
-_Refreshed screenshots for the current design (graphite/navy themes, Habits home) are coming with the beta release._
+| Habits (home) | Tasks | Challenges | Diary |
+|---|---|---|---|
+| ![Habits — the calm daily anchor](docs/screenshots/dawn-habits.png) | ![Tasks — projects, promises, deep work](docs/screenshots/dawn-tasks.png) | ![Challenges — multi-stage goals](docs/screenshots/dawn-challenges.png) | ![Diary — your days, gathered](docs/screenshots/dawn-diary.png) |
 
 ## Author
 
