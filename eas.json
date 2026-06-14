@@ -17,6 +17,10 @@
         "simulator": true
       }
     },
+    "preview-arm64": {
+      "extends": "preview",
+      "env": { "ARM64_ONLY": "1" }
+    },
     "production": {}
   }
 }
