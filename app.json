@@ -28,14 +28,13 @@
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
       "package": "com.the25thdecoy.progress",
+      "blockedPermissions": ["android.permission.SYSTEM_ALERT_WINDOW"],
       "permissions": [
         "SCHEDULE_EXACT_ALARM",
         "USE_EXACT_ALARM",
         "USE_FULL_SCREEN_INTENT",
         "NOTIFICATIONS",
-        "SYSTEM_ALERT_WINDOW",
         "WAKE_LOCK",
-        "SCHEDULE_EXACT_ALARM",
         "VIBRATE",
         "android.permission.RECORD_AUDIO",
         "android.permission.MODIFY_AUDIO_SETTINGS"
@@ -48,6 +47,7 @@
     "plugins": [
       "expo-router",
       "./wake-plugin.js",
+      "./arm64-plugin.js",
       [
         "expo-notifications",
         {
