@@ -1,0 +1,62 @@
+# .easignore — files NOT uploaded to EAS Build.
+# When this file exists, EAS uses it INSTEAD of .gitignore, so it mirrors .gitignore
+# and ADDS the committed release APK (tracked via Git LFS), which would otherwise
+# bloat the source upload to ~140MB. The APK stays in the repo; it's just never sent
+# to EAS (EAS regenerates native code and builds the APK itself).
+
+# ── the reason this file exists ──
+releases/
+*.apk
+*.aab
+
+# dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# generated native folders (EAS prebuilds these)
+/ios
+/android
+.kotlin/
+*.orig.*
+
+# signing / secrets
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.pem
+.env*.local
+
+# Metro / debug
+.metro-health-check*
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# OS / editor / tooling
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+.claude/
+.git/
+
+# typescript
+*.tsbuildinfo
+app-example
+
+# docs (README screenshots — not build input)
+docs/
+
+# local-only workspace + design/sound lab (not needed for a build)
+/local/
+app/(tabs)/lab.tsx
+components/lab/
+assets/sfx-lab/
