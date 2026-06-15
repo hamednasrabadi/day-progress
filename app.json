@@ -48,6 +48,7 @@
       "expo-router",
       "./wake-plugin.js",
       "./arm64-plugin.js",
+      "./gradle-network-plugin.js",
       [
         "expo-notifications",
         {
